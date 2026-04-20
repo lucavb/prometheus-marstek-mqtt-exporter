@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embed IANA timezone database so named zones work in minimal containers
 
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/collector"
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/config"
