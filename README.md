@@ -68,25 +68,27 @@ changes(count by (firmware_version) (marstek_device_info)[1h:]) > 0
 
 Configuration is loaded in order of precedence: **defaults → environment variables → CLI flags** (flags win).
 
+`MARSTEK_MQTT_HOST` and `MARSTEK_DEVICE_ID` are **required** — the exporter exits with code 2 if either is missing.
 
-| Environment Variable           | Flag                     | Default        | Description                                                                         |
-| ------------------------------ | ------------------------ | -------------- | ----------------------------------------------------------------------------------- |
-| `MARSTEK_MQTT_HOST`            | `--mqtt-host`            | `10.1.1.5`     | Broker host                                                                         |
-| `MARSTEK_MQTT_PORT`            | `--mqtt-port`            | `1883`         | Broker port                                                                         |
-| `MARSTEK_MQTT_USERNAME`        | `--mqtt-username`        | `""`           | Optional broker username (empty = anonymous)                                        |
-| `MARSTEK_MQTT_PASSWORD`        | `--mqtt-password`        | `""`           | Optional broker password                                                            |
-| `MARSTEK_MQTT_PASSWORD_FILE`   | `--mqtt-password-file`   | `""`           | Path to file containing broker password; overrides `MQTT_PASSWORD` if set           |
-| `MARSTEK_MQTT_CLIENT_ID`       | `--mqtt-client-id`       | auto           | MQTT client ID (auto-generated as `marstek-exporter-<hostname>-<pid>` if empty)     |
-| `MARSTEK_DEVICE_TYPE`          | `--device-type`          | `HMJ-2`        | MQTT topic device type segment                                                      |
-| `MARSTEK_DEVICE_ID`            | `--device-id`            | `60323bd14b6e` | MQTT topic device ID segment                                                        |
-| `MARSTEK_POLL_INTERVAL`        | `--poll-interval`        | `30s`          | How often to send `cd=1`                                                            |
-| `MARSTEK_RESPONSE_TIMEOUT`     | `--response-timeout`     | `8s`           | Max wait for device response                                                        |
-| `MARSTEK_LISTEN_ADDR`          | `--listen-addr`          | `:9734`        | HTTP metrics listen address                                                         |
-| `MARSTEK_LOG_LEVEL`            | `--log-level`            | `info`         | Log level: `debug`, `info`, `warn`, `error`                                         |
-| `MARSTEK_LOG_FORMAT`           | `--log-format`           | `text`         | Log format: `text` or `json` (Docker image defaults to `json`)                      |
-| `MARSTEK_LOG_SOURCE`           | `--log-source`           | `false`        | Add source file/line to log records                                                 |
-| `MARSTEK_EMULATOR_LISTEN_ADDR` | `--emulator-listen-addr` | `""`           | Listen address for the cloud emulator; **empty = disabled**                         |
-| `MARSTEK_EMULATOR_TZ`          | `--emulator-tz`          | `""`           | Timezone for the time-sync response (e.g. `Europe/Berlin`); empty = system timezone |
+
+| Environment Variable           | Flag                     | Default      | Description                                                                         |
+| ------------------------------ | ------------------------ | ------------ | ----------------------------------------------------------------------------------- |
+| `MARSTEK_MQTT_HOST`            | `--mqtt-host`            | *(required)* | Broker host                                                                         |
+| `MARSTEK_MQTT_PORT`            | `--mqtt-port`            | `1883`       | Broker port                                                                         |
+| `MARSTEK_MQTT_USERNAME`        | `--mqtt-username`        | `""`         | Optional broker username (empty = anonymous)                                        |
+| `MARSTEK_MQTT_PASSWORD`        | `--mqtt-password`        | `""`         | Optional broker password                                                            |
+| `MARSTEK_MQTT_PASSWORD_FILE`   | `--mqtt-password-file`   | `""`         | Path to file containing broker password; overrides `MQTT_PASSWORD` if set           |
+| `MARSTEK_MQTT_CLIENT_ID`       | `--mqtt-client-id`       | auto         | MQTT client ID (auto-generated as `marstek-exporter-<hostname>-<pid>` if empty)     |
+| `MARSTEK_DEVICE_TYPE`          | `--device-type`          | `HMJ-2`      | MQTT topic device type segment                                                      |
+| `MARSTEK_DEVICE_ID`            | `--device-id`            | *(required)* | MQTT topic device ID segment                                                        |
+| `MARSTEK_POLL_INTERVAL`        | `--poll-interval`        | `30s`        | How often to send `cd=1`                                                            |
+| `MARSTEK_RESPONSE_TIMEOUT`     | `--response-timeout`     | `8s`         | Max wait for device response                                                        |
+| `MARSTEK_LISTEN_ADDR`          | `--listen-addr`          | `:9734`      | HTTP metrics listen address                                                         |
+| `MARSTEK_LOG_LEVEL`            | `--log-level`            | `info`       | Log level: `debug`, `info`, `warn`, `error`                                         |
+| `MARSTEK_LOG_FORMAT`           | `--log-format`           | `text`       | Log format: `text` or `json` (Docker image defaults to `json`)                      |
+| `MARSTEK_LOG_SOURCE`           | `--log-source`           | `false`      | Add source file/line to log records                                                 |
+| `MARSTEK_EMULATOR_LISTEN_ADDR` | `--emulator-listen-addr` | `""`         | Listen address for the cloud emulator; **empty = disabled**                         |
+| `MARSTEK_EMULATOR_TZ`          | `--emulator-tz`          | `""`         | Timezone for the time-sync response (e.g. `Europe/Berlin`); empty = system timezone |
 
 
 ## Usage
@@ -98,8 +100,8 @@ services:
   marstek-exporter:
     image: ghcr.io/lucavb/prometheus-marstek-mqtt-exporter:latest
     environment:
-      - MARSTEK_MQTT_HOST=10.1.1.5
-      - MARSTEK_DEVICE_ID=60323bd14b6e
+      - MARSTEK_MQTT_HOST=<your-mqtt-broker-host>   # required
+      - MARSTEK_DEVICE_ID=<your-device-id>           # required
     ports:
       - "9734:9734"
     restart: unless-stopped
@@ -121,7 +123,7 @@ scrape_configs:
 ### Binary
 
 ```bash
-./marstek-exporter --mqtt-host 10.1.1.5 --device-id 60323bd14b6e
+./marstek-exporter --mqtt-host <your-mqtt-broker-host> --device-id <your-device-id>
 ```
 
 ## Cloud emulator (optional)
@@ -142,7 +144,7 @@ services:
   marstek-exporter:
     image: ghcr.io/lucavb/prometheus-marstek-mqtt-exporter:latest
     environment:
-      - MARSTEK_MQTT_HOST=192.168.1.5
+      - MARSTEK_MQTT_HOST=<your-mqtt-broker-host>
       - MARSTEK_DEVICE_ID=<your-device-id>
       - MARSTEK_EMULATOR_LISTEN_ADDR=:80
       - MARSTEK_EMULATOR_TZ=Europe/Berlin   # replace with your timezone

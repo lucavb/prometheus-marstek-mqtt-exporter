@@ -38,14 +38,14 @@ func Load() *Config {
 
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	mqttHost := fs.String("mqtt-host", envOr("MARSTEK_MQTT_HOST", "10.1.1.5"), "Broker host (env: MARSTEK_MQTT_HOST)")
+	mqttHost := fs.String("mqtt-host", envOr("MARSTEK_MQTT_HOST", ""), "Broker host (env: MARSTEK_MQTT_HOST)")
 	mqttPort := fs.Int("mqtt-port", envOrInt("MARSTEK_MQTT_PORT", 1883), "Broker port (env: MARSTEK_MQTT_PORT)")
 	mqttUsername := fs.String("mqtt-username", envOr("MARSTEK_MQTT_USERNAME", ""), "Optional broker username, empty = anonymous (env: MARSTEK_MQTT_USERNAME)")
 	mqttPassword := fs.String("mqtt-password", envOr("MARSTEK_MQTT_PASSWORD", ""), "Optional broker password (env: MARSTEK_MQTT_PASSWORD)")
 	mqttPasswordFile := fs.String("mqtt-password-file", envOr("MARSTEK_MQTT_PASSWORD_FILE", ""), "Path to file containing broker password; overrides --mqtt-password (env: MARSTEK_MQTT_PASSWORD_FILE)")
 	mqttClientID := fs.String("mqtt-client-id", envOr("MARSTEK_MQTT_CLIENT_ID", ""), "MQTT client ID; auto-generated if empty (env: MARSTEK_MQTT_CLIENT_ID)")
 	deviceType := fs.String("device-type", envOr("MARSTEK_DEVICE_TYPE", "HMJ-2"), "MQTT topic device type segment (env: MARSTEK_DEVICE_TYPE)")
-	deviceID := fs.String("device-id", envOr("MARSTEK_DEVICE_ID", "60323bd14b6e"), "MQTT topic device ID segment (env: MARSTEK_DEVICE_ID)")
+	deviceID := fs.String("device-id", envOr("MARSTEK_DEVICE_ID", ""), "MQTT topic device ID segment (env: MARSTEK_DEVICE_ID)")
 	pollInterval := fs.String("poll-interval", envOr("MARSTEK_POLL_INTERVAL", "30s"), "How often to send cd=1 (env: MARSTEK_POLL_INTERVAL)")
 	responseTimeout := fs.String("response-timeout", envOr("MARSTEK_RESPONSE_TIMEOUT", "8s"), "Max wait for device response (env: MARSTEK_RESPONSE_TIMEOUT)")
 	listenAddr := fs.String("listen-addr", envOr("MARSTEK_LISTEN_ADDR", ":9734"), "HTTP metrics listen address (env: MARSTEK_LISTEN_ADDR)")
@@ -56,6 +56,15 @@ func Load() *Config {
 	emulatorTZ := fs.String("emulator-tz", envOr("MARSTEK_EMULATOR_TZ", ""), "Timezone for the cloud emulator time-sync response (e.g. Europe/Berlin); empty = system timezone (env: MARSTEK_EMULATOR_TZ)")
 
 	_ = fs.Parse(os.Args[1:])
+
+	if strings.TrimSpace(*mqttHost) == "" {
+		fmt.Fprintln(os.Stderr, "error: --mqtt-host (or MARSTEK_MQTT_HOST) is required")
+		os.Exit(2)
+	}
+	if strings.TrimSpace(*deviceID) == "" {
+		fmt.Fprintln(os.Stderr, "error: --device-id (or MARSTEK_DEVICE_ID) is required")
+		os.Exit(2)
+	}
 
 	pi, err := time.ParseDuration(*pollInterval)
 	if err != nil || pi <= 0 {
