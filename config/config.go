@@ -24,6 +24,11 @@ type Config struct {
 	LogLevel        string
 	LogFormat       string
 	LogSource       bool
+
+	// Cloud emulator (optional). Empty EmulatorListenAddr disables the feature.
+	EmulatorListenAddr string
+	EmulatorTZ         string
+	EmulatorLocation   *time.Location
 }
 
 // Load applies defaults → env vars → CLI flags (flags win).
@@ -47,6 +52,8 @@ func Load() *Config {
 	logLevel := fs.String("log-level", envOr("MARSTEK_LOG_LEVEL", "info"), "Log level: debug, info, warn, error (env: MARSTEK_LOG_LEVEL)")
 	logFormat := fs.String("log-format", envOr("MARSTEK_LOG_FORMAT", "text"), "Log format: text or json (env: MARSTEK_LOG_FORMAT)")
 	logSource := fs.Bool("log-source", envOrBool("MARSTEK_LOG_SOURCE", false), "Add source file/line to log records (env: MARSTEK_LOG_SOURCE)")
+	emulatorListenAddr := fs.String("emulator-listen-addr", envOr("MARSTEK_EMULATOR_LISTEN_ADDR", ""), "Listen address for the cloud emulator server; empty = disabled (env: MARSTEK_EMULATOR_LISTEN_ADDR)")
+	emulatorTZ := fs.String("emulator-tz", envOr("MARSTEK_EMULATOR_TZ", ""), "Timezone for the cloud emulator time-sync response (e.g. Europe/Berlin); empty = system timezone (env: MARSTEK_EMULATOR_TZ)")
 
 	_ = fs.Parse(os.Args[1:])
 
@@ -91,6 +98,19 @@ func Load() *Config {
 		os.Exit(2)
 	}
 
+	// Resolve emulator timezone; empty string means system timezone.
+	var emulatorLoc *time.Location
+	if *emulatorTZ == "" {
+		emulatorLoc = time.Local
+	} else {
+		var err error
+		emulatorLoc, err = time.LoadLocation(*emulatorTZ)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --emulator-tz %q: %v\n", *emulatorTZ, err)
+			os.Exit(2)
+		}
+	}
+
 	cfg.MQTTHost = *mqttHost
 	cfg.MQTTPort = *mqttPort
 	cfg.MQTTUsername = *mqttUsername
@@ -104,6 +124,9 @@ func Load() *Config {
 	cfg.LogLevel = strings.ToLower(*logLevel)
 	cfg.LogFormat = strings.ToLower(*logFormat)
 	cfg.LogSource = *logSource
+	cfg.EmulatorListenAddr = *emulatorListenAddr
+	cfg.EmulatorTZ = *emulatorTZ
+	cfg.EmulatorLocation = emulatorLoc
 
 	return cfg
 }
@@ -151,6 +174,8 @@ func LogConfig(cfg *Config) {
 		passwordMask = "***"
 	}
 
+	emulatorTZName := cfg.EmulatorLocation.String()
+
 	slog.Info("config loaded",
 		"mqtt_host", cfg.MQTTHost,
 		"mqtt_port", cfg.MQTTPort,
@@ -165,6 +190,8 @@ func LogConfig(cfg *Config) {
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,
 		"log_source", cfg.LogSource,
+		"emulator_listen_addr", cfg.EmulatorListenAddr,
+		"emulator_tz", emulatorTZName,
 	)
 }
 

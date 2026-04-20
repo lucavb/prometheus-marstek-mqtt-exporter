@@ -10,6 +10,7 @@ import (
 
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/collector"
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/config"
+	"github.com/lucavb/prometheus-marstek-mqtt-exporter/emulator"
 	mqttclient "github.com/lucavb/prometheus-marstek-mqtt-exporter/mqtt"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -107,12 +108,30 @@ func main() {
 		}
 	}()
 
+	var emulatorSrv *http.Server
+	if cfg.EmulatorListenAddr != "" {
+		em := emulator.New(reg, cfg.DeviceType, cfg.DeviceID, cfg.EmulatorLocation)
+		emulatorSrv = &http.Server{
+			Addr:    cfg.EmulatorListenAddr,
+			Handler: em.Handler(),
+		}
+		go func() {
+			slog.Info("cloud emulator started", "addr", cfg.EmulatorListenAddr)
+			if err := emulatorSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("cloud emulator error", "error", err)
+			}
+		}()
+	}
+
 	<-ctx.Done()
 	slog.Info("shutting down")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	if emulatorSrv != nil {
+		_ = emulatorSrv.Shutdown(shutdownCtx)
+	}
 }
 
 // runPoll sends one cd=1 poll and waits for a response or timeout.
