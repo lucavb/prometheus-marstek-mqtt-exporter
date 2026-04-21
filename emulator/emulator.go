@@ -1,17 +1,23 @@
 package emulator
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// parseFloat parses s as a float64, returning 0 and false on failure.
+func parseFloat(s string) (float64, bool) {
+	v, err := strconv.ParseFloat(s, 64)
+	return v, err == nil
+}
 
 const (
 	maxBodyLog  = 4096
@@ -41,16 +47,25 @@ var corsHeaders = map[string]string{
 type Emulator struct {
 	tz *time.Location
 
-	mu              sync.Mutex
-	lastDeviceInfo  deviceInfoLabels
-	unknownRateMap  map[string]time.Time // path → time of last warn log
+	mu             sync.Mutex
+	lastDeviceInfo deviceInfoLabels
+	unknownRateMap map[string]time.Time // path → time of last warn log
 
 	// metrics
-	reportsTotal                  *prometheus.CounterVec
-	lastReportTimestamp           *prometheus.GaugeVec
-	lastUnknownRequestTimestamp   prometheus.Gauge
-	reportPayloadBytes            prometheus.Gauge
-	deviceInfo                    *prometheus.GaugeVec
+	reportsTotal                *prometheus.CounterVec
+	lastReportTimestamp         *prometheus.GaugeVec
+	lastUnknownRequestTimestamp prometheus.Gauge
+	reportPayloadBytes          prometheus.Gauge
+	reportDecodeErrors          prometheus.Counter
+	deviceInfo                  *prometheus.GaugeVec
+
+	// cloud-report-only metrics (not available via MQTT cd=1)
+	cellVoltageMillivolts  *prometheus.GaugeVec // b{n}max/min
+	cellVoltageIndex       *prometheus.GaugeVec // b{n}maxn/minn
+	solarInputVoltage      *prometheus.GaugeVec // pv1v/pv2v
+	outputVoltage          *prometheus.GaugeVec // out1v/out2v
+	cloudDeviceTimestamp   prometheus.Gauge
+	wifiBTStatus           prometheus.Gauge
 }
 
 type deviceInfoLabels struct {
@@ -106,6 +121,13 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 	})
 	reg.MustRegister(reportPayloadBytes)
 
+	reportDecodeErrors := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        "marstek_cloud_report_decode_errors_total",
+		Help:        "Total number of setB2500Report payloads that could not be decrypted or parsed. A non-zero value may indicate a firmware key rotation.",
+		ConstLabels: constLabels,
+	})
+	reg.MustRegister(reportDecodeErrors)
+
 	// marstek_device_info follows the Prometheus info-metric convention: value
 	// is always 1 and the interesting data lives in the label set.
 	deviceInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -115,6 +137,48 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 	}, []string{"uid", "device_type_reported", "firmware_version", "sw_version", "sub_version", "mod_version"})
 	reg.MustRegister(deviceInfo)
 
+	cellVoltageMillivolts := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_cell_voltage_millivolts",
+		Help:        "Per-pack min/max cell voltage in millivolts, from the cloud telemetry report.",
+		ConstLabels: constLabels,
+	}, []string{"pack", "bound"})
+	reg.MustRegister(cellVoltageMillivolts)
+
+	cellVoltageIndex := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_cell_voltage_cell_index",
+		Help:        "Index of the min/max voltage cell within each pack, from the cloud telemetry report.",
+		ConstLabels: constLabels,
+	}, []string{"pack", "bound"})
+	reg.MustRegister(cellVoltageIndex)
+
+	solarInputVoltage := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_input_voltage_millivolts",
+		Help:        "Per-solar-input voltage in millivolts, from the cloud telemetry report.",
+		ConstLabels: constLabels,
+	}, []string{"input"})
+	reg.MustRegister(solarInputVoltage)
+
+	outputVoltage := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_output_voltage_millivolts",
+		Help:        "Per-output-port voltage in millivolts, from the cloud telemetry report.",
+		ConstLabels: constLabels,
+	}, []string{"output"})
+	reg.MustRegister(outputVoltage)
+
+	cloudDeviceTimestamp := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        "marstek_cloud_device_timestamp_seconds",
+		Help:        "Device self-reported local time as a Unix timestamp, from the cloud telemetry report. Use to detect clock drift.",
+		ConstLabels: constLabels,
+	})
+	reg.MustRegister(cloudDeviceTimestamp)
+
+	wifiBTStatus := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        "marstek_wifi_bt_status",
+		Help:        "Raw wbs field from the cloud telemetry report, indicating Wi-Fi/Bluetooth connectivity state.",
+		ConstLabels: constLabels,
+	})
+	reg.MustRegister(wifiBTStatus)
+
 	return &Emulator{
 		tz:                          tz,
 		unknownRateMap:              make(map[string]time.Time),
@@ -122,7 +186,14 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		lastReportTimestamp:         lastReportTimestamp,
 		lastUnknownRequestTimestamp: lastUnknownRequestTimestamp,
 		reportPayloadBytes:          reportPayloadBytes,
+		reportDecodeErrors:          reportDecodeErrors,
 		deviceInfo:                  deviceInfo,
+		cellVoltageMillivolts:       cellVoltageMillivolts,
+		cellVoltageIndex:            cellVoltageIndex,
+		solarInputVoltage:           solarInputVoltage,
+		outputVoltage:               outputVoltage,
+		cloudDeviceTimestamp:        cloudDeviceTimestamp,
+		wifiBTStatus:                wifiBTStatus,
 	}
 }
 
@@ -183,8 +254,8 @@ func (e *Emulator) handleDateInfo(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-// handleReport acknowledges a setB2500Report telemetry upload and records
-// the payload size for observability.
+// handleReport acknowledges a setB2500Report telemetry upload, decrypts the
+// payload, and updates Prometheus metrics for the cloud-only telemetry fields.
 func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("cloud emulator: telemetry report request",
 		"method", r.Method,
@@ -193,13 +264,26 @@ func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
 		"user_agent", r.UserAgent(),
 	)
 
-	// The v= parameter is a base64url-encoded encrypted blob. We don't decrypt
-	// it, but we record its decoded size as a cheap change signal.
 	if v := r.URL.Query().Get("v"); v != "" {
-		if decoded, err := base64.URLEncoding.DecodeString(v); err == nil {
-			e.reportPayloadBytes.Set(float64(len(decoded)))
-		} else if decoded, err := base64.RawURLEncoding.DecodeString(v); err == nil {
-			e.reportPayloadBytes.Set(float64(len(decoded)))
+		plaintext, err := DecryptReport(v)
+		if err != nil {
+			e.reportDecodeErrors.Inc()
+			slog.Warn("cloud emulator: setB2500Report decrypt failed — firmware may have rotated the key",
+				"err", err,
+				"remote_addr", r.RemoteAddr,
+			)
+		} else {
+			// Keep the payload-size canary working.
+			e.reportPayloadBytes.Set(float64(len(plaintext)))
+
+			fields, parseErr := ParseReport(plaintext)
+			if parseErr != nil {
+				e.reportDecodeErrors.Inc()
+				slog.Warn("cloud emulator: setB2500Report parse failed", "err", parseErr)
+			} else {
+				slog.Debug("cloud emulator: setB2500Report decoded", "fields", fields)
+				e.updateReportMetrics(fields)
+			}
 		}
 	}
 
@@ -212,6 +296,56 @@ func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	// Fixed 21-byte body matching the real server response observed in the pcap.
 	_, _ = io.WriteString(w, `{"code":1,"msg":"ok"}`)
+}
+
+// updateReportMetrics populates the cloud-report-only Prometheus gauges from
+// the parsed field map. Fields that are already exported by the MQTT collector
+// (soc, bi/bo, pv, iv, bid/bod/pvd/ivd, vs/svs, b0f/b1f/b2f) are skipped to
+// avoid double-counting.
+func (e *Emulator) updateReportMetrics(f map[string]string) {
+	// Per-pack cell voltage min/max and cell indices (packs 0–2).
+	for _, pack := range []string{"0", "1", "2"} {
+		if v, ok := parseFloat(f["b"+pack+"max"]); ok {
+			e.cellVoltageMillivolts.WithLabelValues(pack, "max").Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"min"]); ok {
+			e.cellVoltageMillivolts.WithLabelValues(pack, "min").Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"maxn"]); ok {
+			e.cellVoltageIndex.WithLabelValues(pack, "max").Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"minn"]); ok {
+			e.cellVoltageIndex.WithLabelValues(pack, "min").Set(v)
+		}
+	}
+
+	// Per-solar-input voltage (inputs 1–2).
+	for _, input := range []string{"1", "2"} {
+		if v, ok := parseFloat(f["pv"+input+"v"]); ok {
+			e.solarInputVoltage.WithLabelValues(input).Set(v)
+		}
+	}
+
+	// Per-output-port voltage (outputs 1–2).
+	for _, output := range []string{"1", "2"} {
+		if v, ok := parseFloat(f["out"+output+"v"]); ok {
+			e.outputVoltage.WithLabelValues(output).Set(v)
+		}
+	}
+
+	// Wi-Fi/BT status.
+	if v, ok := parseFloat(f["wbs"]); ok {
+		e.wifiBTStatus.Set(v)
+	}
+
+	// Device self-reported timestamp: "2026-4-20 12:00:00"
+	if dateStr, ok := f["date"]; ok {
+		if ts, err := time.ParseInLocation("2006-1-2 15:04:05", dateStr, time.Local); err == nil {
+			e.cloudDeviceTimestamp.Set(float64(ts.Unix()))
+		} else {
+			slog.Debug("cloud emulator: could not parse date field", "date", dateStr, "err", err)
+		}
+	}
 }
 
 // handleSolarErrInfo handles POST /app/Solar/puterrinfo.php — a buffered

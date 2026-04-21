@@ -181,16 +181,97 @@ func TestReportPayloadBytes(t *testing.T) {
 	em, reg := newTestEmulator(t, time.UTC)
 	h := em.Handler()
 
-	// base64url for a synthetic 10-byte payload.
-	tenBytes := "AAECBAUGB"  // short — just verify the counter logic
+	// Send the synthetic golden fixture so decryption succeeds and the
+	// payload-bytes gauge is set to the plaintext length.
+	v := goldenCiphertext(t)
 	req := httptest.NewRequest(http.MethodGet,
-		"/prod/api/v1/setB2500Report?v="+tenBytes,
+		"/prod/api/v1/setB2500Report?v="+v,
 		nil)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
-	count := testutil.CollectAndCount(reg, "marstek_cloud_report_payload_bytes")
-	if count != 1 {
-		t.Fatalf("expected payload_bytes metric, got %d series", count)
+	gauges := testutil.CollectAndCount(reg, "marstek_cloud_report_payload_bytes")
+	if gauges != 1 {
+		t.Fatalf("expected payload_bytes metric, got %d series", gauges)
+	}
+}
+
+func TestReportCloudMetrics(t *testing.T) {
+	em, reg := newTestEmulator(t, time.UTC)
+	h := em.Handler()
+
+	v := goldenCiphertext(t)
+	req := httptest.NewRequest(http.MethodGet,
+		"/prod/api/v1/setB2500Report?v="+v,
+		nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	// All cloud-report-only metric families must be present and non-empty.
+	for _, name := range []string{
+		"marstek_cell_voltage_millivolts",
+		"marstek_cell_voltage_cell_index",
+		"marstek_solar_input_voltage_millivolts",
+		"marstek_output_voltage_millivolts",
+		"marstek_cloud_device_timestamp_seconds",
+		"marstek_wifi_bt_status",
+	} {
+		if c := testutil.CollectAndCount(reg, name); c == 0 {
+			t.Errorf("metric %q has no series after a valid report", name)
+		}
+	}
+
+	// Spot-check specific label combinations against the synthetic fixture values.
+	metricChecks := []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		{"marstek_cell_voltage_millivolts", map[string]string{"pack": "0", "bound": "max"}, 3300},
+		{"marstek_cell_voltage_millivolts", map[string]string{"pack": "0", "bound": "min"}, 3290},
+		{"marstek_cell_voltage_cell_index", map[string]string{"pack": "0", "bound": "max"}, 1},
+		{"marstek_cell_voltage_cell_index", map[string]string{"pack": "0", "bound": "min"}, 2},
+		{"marstek_solar_input_voltage_millivolts", map[string]string{"input": "1"}, 40000},
+		{"marstek_solar_input_voltage_millivolts", map[string]string{"input": "2"}, 40000},
+		{"marstek_output_voltage_millivolts", map[string]string{"output": "1"}, 30000},
+		{"marstek_output_voltage_millivolts", map[string]string{"output": "2"}, 30000},
+		{"marstek_wifi_bt_status", nil, 3},
+	}
+	for _, tc := range metricChecks {
+		gathered, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("registry.Gather: %v", err)
+		}
+		found := false
+		for _, mf := range gathered {
+			if mf.GetName() != "marstek_"+strings.TrimPrefix(tc.name, "marstek_") && mf.GetName() != tc.name {
+				continue
+			}
+			for _, m := range mf.GetMetric() {
+				match := true
+				for wk, wv := range tc.labels {
+					lmatch := false
+					for _, lp := range m.GetLabel() {
+						if lp.GetName() == wk && lp.GetValue() == wv {
+							lmatch = true
+							break
+						}
+					}
+					if !lmatch {
+						match = false
+						break
+					}
+				}
+				if match {
+					got := m.GetGauge().GetValue()
+					if got != tc.want {
+						t.Errorf("%s%v = %v, want %v", tc.name, tc.labels, got, tc.want)
+					}
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("metric %s with labels %v not found", tc.name, tc.labels)
+		}
 	}
 }
 

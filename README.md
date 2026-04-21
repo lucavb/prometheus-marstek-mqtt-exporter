@@ -46,7 +46,14 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_cloud_reports_total`                          | `endpoint` (`date_info`, `report`, `solar_errinfo`, `unknown`)                                | Total requests received by the cloud emulator per endpoint.                                                                             |
 | `marstek_cloud_last_report_timestamp_seconds`          | `endpoint` (`date_info`, `report`, `solar_errinfo`)                                           | Unix timestamp of the last request per known endpoint.                                                                                  |
 | `marstek_cloud_last_unknown_request_timestamp_seconds` |                                                                                               | Unix timestamp of the last request to an unrecognised endpoint. Non-zero means a new firmware endpoint was discovered — check the logs. |
-| `marstek_cloud_report_payload_bytes`                   |                                                                                               | Decoded byte size of the latest telemetry report payload. A change may indicate a firmware update.                                      |
+| `marstek_cloud_report_payload_bytes`                   |                                                                                               | Decoded plaintext size of the latest telemetry report. A change may indicate a firmware update.                                         |
+| `marstek_cloud_report_decode_errors_total`             |                                                                                               | Payloads that could not be decrypted or parsed. A non-zero value may indicate a firmware key rotation.                                  |
+| `marstek_cell_voltage_millivolts`                      | `pack` (0, 1, 2), `bound` (min, max)                                                          | Per-pack min/max cell voltage in millivolts, from the cloud telemetry report.                                                           |
+| `marstek_cell_voltage_cell_index`                      | `pack` (0, 1, 2), `bound` (min, max)                                                          | Index of the min/max voltage cell within each pack, from the cloud telemetry report.                                                    |
+| `marstek_solar_input_voltage_millivolts`               | `input` (1, 2)                                                                                | Per-solar-input voltage in millivolts, from the cloud telemetry report.                                                                 |
+| `marstek_output_voltage_millivolts`                    | `output` (1, 2)                                                                               | Per-output-port voltage in millivolts, from the cloud telemetry report.                                                                 |
+| `marstek_cloud_device_timestamp_seconds`               |                                                                                               | Device self-reported local time as a Unix timestamp. Use to detect clock drift.                                                         |
+| `marstek_wifi_bt_status`                               |                                                                                               | Raw `wbs` field from the cloud telemetry report, indicating Wi-Fi/Bluetooth connectivity state.                                         |
 
 
 `marstek_up` is strictly tied to MQTT. Cloud reachability is tracked independently via `marstek_cloud_last_report_timestamp_seconds`.
@@ -131,7 +138,7 @@ scrape_configs:
 Marstek battery devices periodically connect to the vendor cloud server (`eu.hamedata.com` on port 80) for two purposes:
 
 1. **Time sync** — `GET /app/neng/getDateInfoeu.php` — the device synchronises its real-time clock.
-2. **Telemetry report** — `GET /prod/api/v1/setB2500Report` — the device uploads an encrypted status blob.
+2. **Telemetry report** — `GET /prod/api/v1/setB2500Report` — the device uploads an encrypted status blob (see [Telemetry report encryption](#telemetry-report-encryption) below).
 3. **Error-event log** — `POST /app/Solar/puterrinfo.php` — the device uploads a buffered batch of error/event transitions as `code.timestamp.value` triples. The server always returns a fixed `_1` ack.
 
 When the cloud is unreachable the device can behave erratically. By running the built-in emulator and redirecting `eu.hamedata.com` to the exporter host on your LAN, both calls are answered locally with byte-compatible responses, keeping the device stable — completely offline.
@@ -166,6 +173,36 @@ The exporter does **not** perform any DNS rewriting. You must configure your LAN
 - Add an entry to the hosts file on your router or gateway.
 
 Port 80 is mandatory — the device firmware hardcodes it and does not use HTTPS.
+
+### Telemetry report encryption
+
+The `v=` query parameter on `GET /prod/api/v1/setB2500Report` is **AES-128-ECB** encrypted with the fixed 16-byte ASCII key `hamedatahamedata` (the vendor string `hamedata` repeated twice), followed by standard PKCS#7 padding. The plaintext is a URL-encoded `key=value&...` query string.
+
+A single captured sample (firmware `HMJ-2 fcv=202310231502`) decrypts to **51 fields** including several not available via the MQTT `cd=1` path:
+
+| Field(s) | Description |
+|---|---|
+| `b0max`, `b0min`, `b0maxn`, `b0minn` (also `b1*`/`b2*`) | Per-pack min/max cell voltage (mV) and cell index |
+| `pv1v`, `pv2v` | Per-solar-input voltage (mV) |
+| `out1v`, `out2v` | Per-output-port voltage (mV) |
+| `wbs` | Wi-Fi/Bluetooth status |
+| `date` | Device self-reported local time |
+
+The emulator decrypts every incoming report and exposes these as the `marstek_cell_voltage_millivolts`, `marstek_solar_input_voltage_millivolts`, `marstek_output_voltage_millivolts`, `marstek_wifi_bt_status`, and `marstek_cloud_device_timestamp_seconds` metrics. Fields already exported via MQTT are not re-exported.
+
+If a future firmware version rotates the key, `marstek_cloud_report_decode_errors_total` will increment and a `WARN` log line will appear. The reproduction script `scripts/crack_report.py` can be run against new pcap captures to recover a new key:
+
+```bash
+uv run --with scapy --with pycryptodome --python 3.12 \
+    python3 scripts/crack_report.py capture.pcap
+# or pass a base64url value directly:
+uv run --with pycryptodome --python 3.12 \
+    python3 scripts/crack_report.py --b64 '<value from v= parameter>'
+```
+
+**Prior art:** [`tomquist/marsrelay`](https://github.com/tomquist/marsrelay) and [`fignew/MarstACK`](https://github.com/fignew/MarstACK) both proxy this endpoint but treat `v=` as opaque. As of this writing, the AES-128-ECB key and plaintext schema have not been published elsewhere.
+
+**Credits:** [`tomquist/hame-relay`](https://github.com/tomquist/hame-relay), [`tomquist/esphome-b2500`](https://github.com/tomquist/esphome-b2500), and [`tomquist/hm2mqtt`](https://github.com/tomquist/hm2mqtt) provided the MQTT-side groundwork and established that Hame firmware consistently uses short ASCII brand-name strings as AES keys.
 
 ### Discovery of new firmware endpoints
 
