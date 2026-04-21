@@ -17,12 +17,14 @@ const (
 	maxBodyLog  = 4096
 	logCooldown = time.Minute
 
-	endpointDateInfo = "date_info"
-	endpointReport   = "report"
-	endpointUnknown  = "unknown"
+	endpointDateInfo     = "date_info"
+	endpointReport       = "report"
+	endpointSolarErrInfo = "solar_errinfo"
+	endpointUnknown      = "unknown"
 
-	pathDateInfo = "/app/neng/getDateInfoeu.php"
-	pathReport   = "/prod/api/v1/setB2500Report"
+	pathDateInfo     = "/app/neng/getDateInfoeu.php"
+	pathReport       = "/prod/api/v1/setB2500Report"
+	pathSolarErrInfo = "/app/Solar/puterrinfo.php"
 )
 
 // corsHeaders are the CORS headers observed in both pcap captures.
@@ -80,6 +82,7 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 	// device first calls in.
 	reportsTotal.WithLabelValues(endpointDateInfo)
 	reportsTotal.WithLabelValues(endpointReport)
+	reportsTotal.WithLabelValues(endpointSolarErrInfo)
 	reportsTotal.WithLabelValues(endpointUnknown)
 
 	lastReportTimestamp := prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -128,6 +131,7 @@ func (e *Emulator) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathDateInfo, e.handleDateInfo)
 	mux.HandleFunc(pathReport, e.handleReport)
+	mux.HandleFunc(pathSolarErrInfo, e.handleSolarErrInfo)
 	mux.HandleFunc("/", e.handleUnknown)
 	return mux
 }
@@ -208,6 +212,60 @@ func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	// Fixed 21-byte body matching the real server response observed in the pcap.
 	_, _ = io.WriteString(w, `{"code":1,"msg":"ok"}`)
+}
+
+// handleSolarErrInfo handles POST /app/Solar/puterrinfo.php — a buffered
+// error/event log upload from the device. The real cloud always returns "_1"
+// regardless of body content. The body is read, logged at info level with a
+// safe best-effort parse (so operators can validate the schema hypothesis), and
+// then discarded. No per-event metrics are collected in this pass.
+func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
+	var (
+		raw          []byte
+		bodyTruncated bool
+	)
+	if r.ContentLength != 0 {
+		lr := io.LimitReader(r.Body, maxBodyLog+1)
+		var err error
+		raw, err = io.ReadAll(lr)
+		if err == nil && len(raw) > maxBodyLog {
+			raw = raw[:maxBodyLog]
+			bodyTruncated = true
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+	}
+
+	parsed := parseSolarErrInfoBody(raw)
+
+	e.reportsTotal.WithLabelValues(endpointSolarErrInfo).Inc()
+	e.lastReportTimestamp.WithLabelValues(endpointSolarErrInfo).Set(float64(time.Now().Unix()))
+
+	attrs := []any{
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote_addr", r.RemoteAddr,
+		"user_agent", r.UserAgent(),
+		"content_type", r.Header.Get("Content-Type"),
+		"content_length", r.ContentLength,
+		"body_raw", bodyToString(raw),
+		"body_truncated", bodyTruncated,
+		"uid", parsed.UID,
+		"header", parsed.Header,
+		"events_count", len(parsed.Events),
+		"events_oldest_ts", parsed.OldestTS,
+		"events_newest_ts", parsed.NewestTS,
+		"distinct_codes", parsed.DistinctCodes,
+		"distinct_values", parsed.DistinctValues,
+	}
+	if len(parsed.ParseErrors) > 0 {
+		attrs = append(attrs, "parse_errors", parsed.ParseErrors)
+	}
+	slog.Info("cloud emulator: solar errinfo upload", attrs...)
+
+	setCORSHeaders(w)
+	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "_1")
 }
 
 // handleUnknown catches any path not matched above, logs it at warn level

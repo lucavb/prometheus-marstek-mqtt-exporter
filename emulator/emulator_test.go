@@ -207,6 +207,7 @@ func TestReportCounterIncrements(t *testing.T) {
 # TYPE marstek_cloud_reports_total counter
 marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="date_info"} 0
 marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="report"} 2
+marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="solar_errinfo"} 0
 marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="unknown"} 0
 `), "marstek_cloud_reports_total"); err != nil {
 		t.Errorf("counter mismatch: %v", err)
@@ -231,6 +232,7 @@ func TestUnknownEndpoint404(t *testing.T) {
 # TYPE marstek_cloud_reports_total counter
 marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="date_info"} 0
 marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="report"} 0
+marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="solar_errinfo"} 0
 marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",endpoint="unknown"} 1
 `), "marstek_cloud_reports_total"); err != nil {
 		t.Errorf("counter mismatch: %v", err)

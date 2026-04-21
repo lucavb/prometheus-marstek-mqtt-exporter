@@ -43,8 +43,8 @@ All metrics carry the labels `device_type` and `device_id`.
 | Metric                                                 | Labels                                                                                        | Description                                                                                                                             |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `marstek_device_info`                                  | `uid`, `device_type_reported`, `firmware_version`, `sw_version`, `sub_version`, `mod_version` | Device metadata parsed from the cloud time-sync request. Value is always 1; use label values for joins or alerts.                       |
-| `marstek_cloud_reports_total`                          | `endpoint` (`date_info`, `report`, `unknown`)                                                 | Total requests received by the cloud emulator per endpoint.                                                                             |
-| `marstek_cloud_last_report_timestamp_seconds`          | `endpoint` (`date_info`, `report`)                                                            | Unix timestamp of the last request per known endpoint.                                                                                  |
+| `marstek_cloud_reports_total`                          | `endpoint` (`date_info`, `report`, `solar_errinfo`, `unknown`)                                | Total requests received by the cloud emulator per endpoint.                                                                             |
+| `marstek_cloud_last_report_timestamp_seconds`          | `endpoint` (`date_info`, `report`, `solar_errinfo`)                                           | Unix timestamp of the last request per known endpoint.                                                                                  |
 | `marstek_cloud_last_unknown_request_timestamp_seconds` |                                                                                               | Unix timestamp of the last request to an unrecognised endpoint. Non-zero means a new firmware endpoint was discovered — check the logs. |
 | `marstek_cloud_report_payload_bytes`                   |                                                                                               | Decoded byte size of the latest telemetry report payload. A change may indicate a firmware update.                                      |
 
@@ -132,6 +132,7 @@ Marstek battery devices periodically connect to the vendor cloud server (`eu.ham
 
 1. **Time sync** — `GET /app/neng/getDateInfoeu.php` — the device synchronises its real-time clock.
 2. **Telemetry report** — `GET /prod/api/v1/setB2500Report` — the device uploads an encrypted status blob.
+3. **Error-event log** — `POST /app/Solar/puterrinfo.php` — the device uploads a buffered batch of error/event transitions as `code.timestamp.value` triples. The server always returns a fixed `_1` ack.
 
 When the cloud is unreachable the device can behave erratically. By running the built-in emulator and redirecting `eu.hamedata.com` to the exporter host on your LAN, both calls are answered locally with byte-compatible responses, keeping the device stable — completely offline.
 
@@ -167,6 +168,8 @@ The exporter does **not** perform any DNS rewriting. You must configure your LAN
 Port 80 is mandatory — the device firmware hardcodes it and does not use HTTPS.
 
 ### Discovery of new firmware endpoints
+
+While the `solar_errinfo` payload schema is still being validated against real traffic, every upload to `/app/Solar/puterrinfo.php` is logged at **info** level with the raw body and a best-effort parse (uid, header integers, event count, distinct codes/values, oldest/newest timestamps). Once the format is confirmed this can be lowered to `debug`.
 
 Any request that does not match a known path is:
 
