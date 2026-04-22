@@ -134,3 +134,9 @@ func errInfoCodeLabel(code int64) string {
 	}
 	return fmt.Sprintf("unknown_%d", code)
 }
+
+// errInfoCodeDescription returns the human-readable description for a code,
+// falling back to an empty string for codes not in the dictionary.
+func errInfoCodeDescription(code int64) string {
+	return errInfoCodeDesc[code]
+}

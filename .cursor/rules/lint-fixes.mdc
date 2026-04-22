@@ -1,0 +1,43 @@
+---
+description: How to fix golangci-lint errors without destroying valuable code
+alwaysApply: true
+---
+
+# Fixing Lint Errors
+
+## Never delete code to silence a linter
+
+Deleting a variable, map, or function purely to fix an `unused` lint error destroys
+valuable work (e.g. firmware analysis data, lookup tables, documentation).
+
+**Always fix the root cause instead:**
+
+| Lint error | Wrong fix | Right fix |
+|---|---|---|
+| `var X is unused` | Delete `X` | Add a function/method that uses `X` |
+| `SA9003: empty branch` | Delete the `if` block | Remove the `if` and keep (or inline) any useful logic |
+| `errcheck: unchecked error` | Delete the call | Assign and handle the error |
+
+## Example: unused map
+
+```go
+// ❌ BAD — deletes firmware-analysis data to silence linter
+// var errInfoCodeDesc = map[int64]string{ ... }
+
+// ✅ GOOD — expose the map through a function so it is referenced
+func errInfoCodeDescription(code int64) string {
+    return errInfoCodeDesc[code]
+}
+```
+
+## Example: empty branch (SA9003)
+
+```go
+// ❌ BAD — empty body, linter complains, logic intent is lost
+if err := doThing(); err == nil {
+    // nothing
+}
+
+// ✅ GOOD — remove the if entirely; keep the actual verification below
+doThing() // or drop if the call result is unused
+```

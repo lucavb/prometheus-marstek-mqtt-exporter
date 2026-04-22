@@ -20,6 +20,7 @@ type Config struct {
 	DeviceID        string
 	PollInterval    time.Duration
 	ResponseTimeout time.Duration
+	MetricTTL       time.Duration
 	ListenAddr      string
 	LogLevel        string
 	LogFormat       string
@@ -48,6 +49,7 @@ func Load() *Config {
 	deviceID := fs.String("device-id", envOr("MARSTEK_DEVICE_ID", ""), "MQTT topic device ID segment (env: MARSTEK_DEVICE_ID)")
 	pollInterval := fs.String("poll-interval", envOr("MARSTEK_POLL_INTERVAL", "30s"), "How often to send cd=1 (env: MARSTEK_POLL_INTERVAL)")
 	responseTimeout := fs.String("response-timeout", envOr("MARSTEK_RESPONSE_TIMEOUT", "8s"), "Max wait for device response (env: MARSTEK_RESPONSE_TIMEOUT)")
+	metricTTL := fs.String("metric-ttl", envOr("MARSTEK_METRIC_TTL", ""), "How long to keep device gauge values after the last successful update before dropping them from /metrics; empty = 3×poll-interval (env: MARSTEK_METRIC_TTL)")
 	listenAddr := fs.String("listen-addr", envOr("MARSTEK_LISTEN_ADDR", ":9734"), "HTTP metrics listen address (env: MARSTEK_LISTEN_ADDR)")
 	logLevel := fs.String("log-level", envOr("MARSTEK_LOG_LEVEL", "info"), "Log level: debug, info, warn, error (env: MARSTEK_LOG_LEVEL)")
 	logFormat := fs.String("log-format", envOr("MARSTEK_LOG_FORMAT", "text"), "Log format: text or json (env: MARSTEK_LOG_FORMAT)")
@@ -75,6 +77,17 @@ func Load() *Config {
 	if err != nil || rt <= 0 {
 		fmt.Fprintf(os.Stderr, "error: invalid --response-timeout %q: must be a positive duration\n", *responseTimeout)
 		os.Exit(2)
+	}
+
+	var ttl time.Duration
+	if *metricTTL == "" {
+		ttl = 3 * pi
+	} else {
+		ttl, err = time.ParseDuration(*metricTTL)
+		if err != nil || ttl <= 0 {
+			fmt.Fprintf(os.Stderr, "error: invalid --metric-ttl %q: must be a positive duration\n", *metricTTL)
+			os.Exit(2)
+		}
 	}
 
 	// File overrides inline password value (docker/k8s secret pattern).
@@ -129,6 +142,7 @@ func Load() *Config {
 	cfg.DeviceID = *deviceID
 	cfg.PollInterval = pi
 	cfg.ResponseTimeout = rt
+	cfg.MetricTTL = ttl
 	cfg.ListenAddr = *listenAddr
 	cfg.LogLevel = strings.ToLower(*logLevel)
 	cfg.LogFormat = strings.ToLower(*logFormat)
@@ -195,6 +209,7 @@ func LogConfig(cfg *Config) {
 		"device_id", cfg.DeviceID,
 		"poll_interval", cfg.PollInterval.String(),
 		"response_timeout", cfg.ResponseTimeout.String(),
+		"metric_ttl", cfg.MetricTTL.String(),
 		"listen_addr", cfg.ListenAddr,
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,

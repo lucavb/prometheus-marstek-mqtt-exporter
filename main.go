@@ -27,7 +27,7 @@ func main() {
 
 	// Dedicated registry excludes Go runtime / process metrics from /metrics.
 	reg := prometheus.NewRegistry()
-	coll := collector.New(reg, cfg.DeviceType, cfg.DeviceID)
+	coll := collector.New(reg, cfg.DeviceType, cfg.DeviceID, cfg.MetricTTL)
 
 	client := mqttclient.New(cfg)
 	if err := client.Connect(ctx); err != nil {

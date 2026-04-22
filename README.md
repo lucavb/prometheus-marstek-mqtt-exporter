@@ -100,6 +100,7 @@ Configuration is loaded in order of precedence: **defaults → environment varia
 | `MARSTEK_DEVICE_ID`            | `--device-id`            | *(required)* | MQTT topic device ID segment                                                        |
 | `MARSTEK_POLL_INTERVAL`        | `--poll-interval`        | `30s`        | How often to send `cd=1`                                                            |
 | `MARSTEK_RESPONSE_TIMEOUT`     | `--response-timeout`     | `8s`         | Max wait for device response                                                        |
+| `MARSTEK_METRIC_TTL`           | `--metric-ttl`           | `3×poll-interval` | How long to keep device gauge values after the last successful update before dropping them from `/metrics`; empty = 3× poll interval |
 | `MARSTEK_LISTEN_ADDR`          | `--listen-addr`          | `:9734`      | HTTP metrics listen address                                                         |
 | `MARSTEK_LOG_LEVEL`            | `--log-level`            | `info`       | Log level: `debug`, `info`, `warn`, `error`                                         |
 | `MARSTEK_LOG_FORMAT`           | `--log-format`           | `text`       | Log format: `text` or `json` (Docker image defaults to `json`)                      |
