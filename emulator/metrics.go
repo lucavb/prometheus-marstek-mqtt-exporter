@@ -16,9 +16,11 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	cellVoltageMillivolts *prometheus.GaugeVec,
 	cellVoltageIndex *prometheus.GaugeVec,
 	solarInputVoltage *prometheus.GaugeVec,
+	solarInputPower *prometheus.GaugeVec,
 	outputVoltage *prometheus.GaugeVec,
 	cloudDeviceTimestamp prometheus.Gauge,
 	wifiBTStatus prometheus.Gauge,
+	solarErrInfoHeaderValue *prometheus.GaugeVec,
 ) {
 	reportsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "marstek_cloud_reports_total",
@@ -92,6 +94,13 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	}, []string{"input"})
 	reg.MustRegister(solarInputVoltage)
 
+	solarInputPower = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_input_power_watts",
+		Help:        "Per-solar-input power in watts, from the cloud telemetry report (pv1/pv2 fields). The sum equals the aggregate pv field.",
+		ConstLabels: constLabels,
+	}, []string{"input"})
+	reg.MustRegister(solarInputPower)
+
 	outputVoltage = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name:        "marstek_output_voltage_millivolts",
 		Help:        "Per-output-port voltage in millivolts, from the cloud telemetry report.",
@@ -112,6 +121,19 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 		ConstLabels: constLabels,
 	})
 	reg.MustRegister(wifiBTStatus)
+
+	// Each puterrinfo upload begins with colon-separated header integers whose
+	// positions are partially mapped: index=1 is sw_version, index=2..4 are
+	// pe0..pe2. Other indices are present in real captures but not yet
+	// fully identified. The metric is labelled by zero-based position so that
+	// any new index introduced by a firmware update surfaces immediately in
+	// dashboards and alerts.
+	solarErrInfoHeaderValue = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_cloud_solar_errinfo_header_value",
+		Help:        "Integer values from the puterrinfo request header, keyed by zero-based positional index. index=1 is sw_version; index=2..4 are pe0..pe2; other indices are not yet fully identified.",
+		ConstLabels: constLabels,
+	}, []string{"index"})
+	reg.MustRegister(solarErrInfoHeaderValue)
 
 	return
 }

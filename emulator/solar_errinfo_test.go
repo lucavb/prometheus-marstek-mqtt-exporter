@@ -121,6 +121,28 @@ func TestParseSolarErrInfoBody(t *testing.T) {
 			t.Errorf("uid = %q, want uid123", p.UID)
 		}
 	})
+
+	t.Run("marstek-6 header 0:110:23:0:0:131", func(t *testing.T) {
+		// Header observed in the marstek-6.pcap capture: 6 integers where the
+		// 6th element (index 5, value 131) was not present in earlier captures.
+		body := "3601115030374d33300f1365:0:110:23:0:0:131:84.1776750480.327679,"
+		p := parseSolarErrInfoBody([]byte(body))
+		if len(p.ParseErrors) != 0 {
+			t.Errorf("unexpected parse errors: %v", p.ParseErrors)
+		}
+		wantHeader := []int64{0, 110, 23, 0, 0, 131}
+		if len(p.Header) != len(wantHeader) {
+			t.Fatalf("header len = %d, want %d; got %v", len(p.Header), len(wantHeader), p.Header)
+		}
+		for i, want := range wantHeader {
+			if p.Header[i] != want {
+				t.Errorf("header[%d] = %d, want %d", i, p.Header[i], want)
+			}
+		}
+		if len(p.Events) != 1 {
+			t.Errorf("events count = %d, want 1", len(p.Events))
+		}
+	})
 }
 
 // ---- handler tests ----
@@ -205,6 +227,68 @@ marstek_cloud_reports_total{device_id="testdeviceid",device_type="TEST-TYPE",end
 
 	if ts := testutil.ToFloat64(em.lastUnknownRequestTimestamp); ts != 0 {
 		t.Errorf("lastUnknownRequestTimestamp = %v, want 0", ts)
+	}
+}
+
+func TestSolarErrInfoHeaderGauge(t *testing.T) {
+	em, reg := newTestEmulator(t, time.UTC)
+	h := em.Handler()
+
+	// First upload: marstek-6 header with 6 fields (including the new index=5).
+	body6 := "3601115030374d33300f1365:0:110:23:0:0:131:84.1776750480.0,"
+	req := httptest.NewRequest(http.MethodPost, pathSolarErrInfo, strings.NewReader(body6))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.ContentLength = int64(len(body6))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	// All six indices must be set.
+	if c := testutil.CollectAndCount(reg, "marstek_cloud_solar_errinfo_header_value"); c != 6 {
+		t.Fatalf("expected 6 header series after first upload, got %d", c)
+	}
+
+	// Spot-check known mappings: index=1 → sw_version=110, index=5 → 131.
+	wantValues := map[string]float64{
+		"0": 0, "1": 110, "2": 23, "3": 0, "4": 0, "5": 131,
+	}
+	gathered, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("registry.Gather: %v", err)
+	}
+	for _, mf := range gathered {
+		if mf.GetName() != "marstek_cloud_solar_errinfo_header_value" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			var idx string
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "index" {
+					idx = lp.GetValue()
+				}
+			}
+			want, ok := wantValues[idx]
+			if !ok {
+				t.Errorf("unexpected index label %q", idx)
+				continue
+			}
+			if got := m.GetGauge().GetValue(); got != want {
+				t.Errorf("index=%s: got %v, want %v", idx, got, want)
+			}
+			delete(wantValues, idx)
+		}
+	}
+	for missing := range wantValues {
+		t.Errorf("header gauge index=%s not found in metrics", missing)
+	}
+
+	// Second upload: shorter header with only 5 fields — index=5 must disappear.
+	body5 := "3601115030374d33300f1365:0:110:23:0:0:84.1776750480.0,"
+	req2 := httptest.NewRequest(http.MethodPost, pathSolarErrInfo, strings.NewReader(body5))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req2.ContentLength = int64(len(body5))
+	h.ServeHTTP(httptest.NewRecorder(), req2)
+
+	if c := testutil.CollectAndCount(reg, "marstek_cloud_solar_errinfo_header_value"); c != 5 {
+		t.Errorf("expected 5 header series after shrinkage, got %d", c)
 	}
 }
 

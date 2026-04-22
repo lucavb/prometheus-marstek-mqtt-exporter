@@ -48,9 +48,11 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_cloud_last_unknown_request_timestamp_seconds` |                                                                                               | Unix timestamp of the last request to an unrecognised endpoint. Non-zero means a new firmware endpoint was discovered — check the logs. |
 | `marstek_cloud_report_payload_bytes`                   |                                                                                               | Decoded plaintext size of the latest telemetry report. A change may indicate a firmware update.                                         |
 | `marstek_cloud_report_decode_errors_total`             |                                                                                               | Payloads that could not be decrypted or parsed. A non-zero value may indicate a firmware key rotation.                                  |
+| `marstek_cloud_solar_errinfo_header_value`             | `index` (0, 1, 2, …)                                                                          | Integer values from the `puterrinfo` request header, keyed by zero-based position. `index=1` is `sw_version`; `index=2..4` are `pe0..pe2`; other indices are not yet fully identified. A new index appearing means firmware added a header field. |
 | `marstek_cell_voltage_millivolts`                      | `pack` (0, 1, 2), `bound` (min, max)                                                          | Per-pack min/max cell voltage in millivolts, from the cloud telemetry report.                                                           |
 | `marstek_cell_voltage_cell_index`                      | `pack` (0, 1, 2), `bound` (min, max)                                                          | Index of the min/max voltage cell within each pack, from the cloud telemetry report.                                                    |
 | `marstek_solar_input_voltage_millivolts`               | `input` (1, 2)                                                                                | Per-solar-input voltage in millivolts, from the cloud telemetry report.                                                                 |
+| `marstek_solar_input_power_watts`                      | `input` (1, 2)                                                                                | Per-solar-input power in watts, from the cloud telemetry report (`pv1`/`pv2` fields). The sum equals the aggregate `pv` field.          |
 | `marstek_output_voltage_millivolts`                    | `output` (1, 2)                                                                               | Per-output-port voltage in millivolts, from the cloud telemetry report.                                                                 |
 | `marstek_cloud_device_timestamp_seconds`               |                                                                                               | Device self-reported local time as a Unix timestamp. Use to detect clock drift.                                                         |
 | `marstek_wifi_bt_status`                               |                                                                                               | Raw `wbs` field from the cloud telemetry report, indicating Wi-Fi/Bluetooth connectivity state.                                         |
@@ -61,14 +63,22 @@ All metrics carry the labels `device_type` and `device_id`.
 Example PromQL alerts:
 
 ```promql
-# Device hasn't contacted the cloud emulator in 10 minutes:
-(time() - marstek_cloud_last_report_timestamp_seconds{endpoint="date_info"}) > 600
+# Device hasn't sent a telemetry report in 15 minutes (steady-state cadence is ~10 min,
+# so 900 s gives a single-interval grace period; use 600 s only if you need burst-phase coverage):
+(time() - marstek_cloud_last_report_timestamp_seconds{endpoint="report"}) > 900
+
+# Device hasn't synced time since boot (getDateInfoeu.php fires once at boot only,
+# so this fires when the device hasn't rebooted in more than 24 h — use as a boot-loop detector):
+(time() - marstek_cloud_last_report_timestamp_seconds{endpoint="date_info"}) > 86400
 
 # A new, unrecognised firmware endpoint was seen — check the logs:
 changes(marstek_cloud_last_unknown_request_timestamp_seconds[1h]) > 0
 
 # Firmware version changed:
 changes(count by (firmware_version) (marstek_device_info)[1h:]) > 0
+
+# A new, unlabelled puterrinfo header index appeared — document and promote to a named metric:
+max by (index) (marstek_cloud_solar_errinfo_header_value) unless on(index) marstek_cloud_solar_errinfo_header_value offset 7d
 ```
 
 ## Configuration
@@ -135,11 +145,17 @@ scrape_configs:
 
 ## Cloud emulator (optional)
 
-Marstek battery devices periodically connect to the vendor cloud server (`eu.hamedata.com` on port 80) for two purposes:
+Marstek battery devices contact the vendor cloud server (`eu.hamedata.com` on port 80) for three purposes:
 
-1. **Time sync** — `GET /app/neng/getDateInfoeu.php` — the device synchronises its real-time clock.
-2. **Telemetry report** — `GET /prod/api/v1/setB2500Report` — the device uploads an encrypted status blob (see [Telemetry report encryption](#telemetry-report-encryption) below).
-3. **Error-event log** — `POST /app/Solar/puterrinfo.php` — the device uploads a buffered batch of error/event transitions as `code.timestamp.value` triples. The server always returns a fixed `_1` ack.
+1. **Time sync** — `GET /app/neng/getDateInfoeu.php` — the device synchronises its real-time clock. This request fires **once per boot**, immediately after the device establishes its MQTT connection. It does not repeat in normal operation, so `marstek_cloud_last_report_timestamp_seconds{endpoint="date_info"}` is effectively a last-reboot timestamp.
+
+2. **Telemetry report** — `GET /prod/api/v1/setB2500Report` — the device uploads an encrypted status blob (see [Telemetry report encryption](#telemetry-report-encryption) below). The upload cadence is **bimodal**:
+   - **Burst phase** (~15 s interval, lasting ~8 min after boot/reconnect): the device reports aggressively while settling.
+   - **Steady-state** (~10 min interval, indefinite): the device settles into a slow background rate.
+
+   Set staleness alerts against `marstek_cloud_last_report_timestamp_seconds{endpoint="report"}` with a threshold of at least 900 s (one interval + grace); 600 s will produce false positives in steady-state.
+
+3. **Error-event log** — `POST /app/Solar/puterrinfo.php` — the device uploads a buffered batch of error/event transitions as `code.timestamp.value` triples. The server always returns a fixed `_1` ack. This is **event-driven**, not periodic; a single upload typically covers the last 24 h of events.
 
 When the cloud is unreachable the device can behave erratically. By running the built-in emulator and redirecting `eu.hamedata.com` to the exporter host on your LAN, both calls are answered locally with byte-compatible responses, keeping the device stable — completely offline.
 

@@ -72,6 +72,8 @@ func TestDecryptReport_Golden(t *testing.T) {
 		"soc":   "50",
 		"pv1v":  "40000",
 		"pv2v":  "40000",
+		"pv1":   "50",
+		"pv2":   "50",
 		"out1v": "30000",
 		"out2v": "30000",
 		"b0max": "3300",

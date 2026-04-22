@@ -14,9 +14,10 @@ import (
 type Emulator struct {
 	tz *time.Location
 
-	mu             sync.Mutex
-	lastDeviceInfo deviceInfoLabels
-	unknownRateMap map[string]time.Time // path → time of last warn log
+	mu                    sync.Mutex
+	lastDeviceInfo        deviceInfoLabels
+	unknownRateMap        map[string]time.Time // path → time of last warn log
+	lastErrInfoHeaderLen  int                  // length of the header slice from the previous puterrinfo upload
 
 	// metrics
 	reportsTotal                *prometheus.CounterVec
@@ -27,12 +28,14 @@ type Emulator struct {
 	deviceInfo                  *prometheus.GaugeVec
 
 	// cloud-report-only metrics (not available via MQTT cd=1)
-	cellVoltageMillivolts *prometheus.GaugeVec // b{n}max/min
-	cellVoltageIndex      *prometheus.GaugeVec // b{n}maxn/minn
-	solarInputVoltage     *prometheus.GaugeVec // pv1v/pv2v
-	outputVoltage         *prometheus.GaugeVec // out1v/out2v
-	cloudDeviceTimestamp  prometheus.Gauge
-	wifiBTStatus          prometheus.Gauge
+	cellVoltageMillivolts    *prometheus.GaugeVec // b{n}max/min
+	cellVoltageIndex         *prometheus.GaugeVec // b{n}maxn/minn
+	solarInputVoltage        *prometheus.GaugeVec // pv1v/pv2v
+	solarInputPower          *prometheus.GaugeVec // pv1/pv2 (watts)
+	outputVoltage            *prometheus.GaugeVec // out1v/out2v
+	cloudDeviceTimestamp     prometheus.Gauge
+	wifiBTStatus             prometheus.Gauge
+	solarErrInfoHeaderValue  *prometheus.GaugeVec // puterrinfo header integers by positional index
 }
 
 type deviceInfoLabels struct {
@@ -55,8 +58,9 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 
 	reportsTotal, lastReportTimestamp, lastUnknownRequestTimestamp,
 		reportPayloadBytes, reportDecodeErrors, deviceInfo,
-		cellVoltageMillivolts, cellVoltageIndex, solarInputVoltage,
-		outputVoltage, cloudDeviceTimestamp, wifiBTStatus := registerMetrics(reg, constLabels)
+		cellVoltageMillivolts, cellVoltageIndex, solarInputVoltage, solarInputPower,
+		outputVoltage, cloudDeviceTimestamp, wifiBTStatus,
+		solarErrInfoHeaderValue := registerMetrics(reg, constLabels)
 
 	return &Emulator{
 		tz:                          tz,
@@ -70,9 +74,11 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		cellVoltageMillivolts:       cellVoltageMillivolts,
 		cellVoltageIndex:            cellVoltageIndex,
 		solarInputVoltage:           solarInputVoltage,
+		solarInputPower:             solarInputPower,
 		outputVoltage:               outputVoltage,
 		cloudDeviceTimestamp:        cloudDeviceTimestamp,
 		wifiBTStatus:                wifiBTStatus,
+		solarErrInfoHeaderValue:     solarErrInfoHeaderValue,
 	}
 }
 

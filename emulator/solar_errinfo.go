@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,24 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+// Known event codes observed in marstek-6.pcap (44 events, firmware fcv=202310231502).
+// Each event is a triple: <code>.<unix_timestamp_seconds>.<value>.
+// All timestamps are Unix seconds (UTC); a single upload covers the previous ~24 h.
+//
+//   - 84  Heartbeat toggle. Value alternates between 0 and 327679 (0x4FFFF) on a
+//         ~60 s cycle. The device appears to emit a pair per measurement period.
+//   - 75  Signed flag bitmap. Observed values: 0, -4194302, -4259838, -4325374.
+//         Adjacent values differ by exactly 0x10000, suggesting bit-field changes.
+//   - 78  Mode/state change. Value always 1 in this capture.
+//   - 12  Monotonic counter. Observed values: 3652, 3653 (increments by 1).
+//   - 91  One-off event; semantics unknown.
+//   - 92  One-off event; semantics unknown.
+//   - 77  One-off event; semantics unknown.
+//   - 101 One-off event; semantics unknown.
+//
+// This dictionary is derived from a single capture and is tentative; new codes
+// should be added as they are observed in subsequent captures.
 
 // solarErrInfoEvent represents one event triple from the device's error log:
 // <code>.<unix_ts_seconds>.<value>
@@ -137,6 +156,26 @@ func parseSolarErrInfoBody(raw []byte) (p solarErrInfoParsed) {
 	return
 }
 
+// updateSolarErrInfoHeader publishes each element of the puterrinfo header
+// slice as a labelled gauge series. If the new header is shorter than the
+// previous one, the now-absent higher-indexed series are deleted so they don't
+// linger with stale values after a firmware downgrade.
+func (e *Emulator) updateSolarErrInfoHeader(header []int64) {
+	e.mu.Lock()
+	prevLen := e.lastErrInfoHeaderLen
+	e.lastErrInfoHeaderLen = len(header)
+	e.mu.Unlock()
+
+	// Delete any series whose index no longer exists in this upload.
+	for i := len(header); i < prevLen; i++ {
+		e.solarErrInfoHeaderValue.DeleteLabelValues(fmt.Sprintf("%d", i))
+	}
+
+	for i, v := range header {
+		e.solarErrInfoHeaderValue.WithLabelValues(strconv.Itoa(i)).Set(float64(v))
+	}
+}
+
 // bodyToString returns body as a UTF-8 string if it is valid UTF-8, otherwise
 // as a hex string prefixed with "hex:" so log consumers can identify the encoding.
 func bodyToString(raw []byte) string {
@@ -180,6 +219,8 @@ func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
 
 	e.reportsTotal.WithLabelValues(endpointSolarErrInfo).Inc()
 	e.lastReportTimestamp.WithLabelValues(endpointSolarErrInfo).Set(float64(time.Now().Unix()))
+
+	e.updateSolarErrInfoHeader(parsed.Header)
 
 	attrs := []any{
 		"method", r.Method,

@@ -173,10 +173,13 @@ func (e *Emulator) updateReportMetrics(f map[string]string) {
 		}
 	}
 
-	// Per-solar-input voltage (inputs 1–2).
+	// Per-solar-input voltage and power (inputs 1–2).
 	for _, input := range []string{"1", "2"} {
 		if v, ok := parseFloat(f["pv"+input+"v"]); ok {
 			e.solarInputVoltage.WithLabelValues(input).Set(v)
+		}
+		if v, ok := parseFloat(f["pv"+input]); ok {
+			e.solarInputPower.WithLabelValues(input).Set(v)
 		}
 	}
 
