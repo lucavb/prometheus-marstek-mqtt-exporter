@@ -21,6 +21,15 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	cloudDeviceTimestamp prometheus.Gauge,
 	wifiBTStatus prometheus.Gauge,
 	solarErrInfoHeaderValue *prometheus.GaugeVec,
+	// Named puterrinfo metrics.
+	solarErrInfoReportType *prometheus.GaugeVec,
+	solarErrInfoSwVersion *prometheus.GaugeVec,
+	solarErrInfoField2 *prometheus.GaugeVec,
+	solarErrInfoField3 *prometheus.GaugeVec,
+	solarErrInfoField4 *prometheus.GaugeVec,
+	solarErrInfoField5 *prometheus.GaugeVec,
+	solarErrInfoEventTotal *prometheus.CounterVec,
+	solarErrInfoLastEventTS *prometheus.GaugeVec,
 ) {
 	reportsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "marstek_cloud_reports_total",
@@ -122,18 +131,73 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	})
 	reg.MustRegister(wifiBTStatus)
 
-	// Each puterrinfo upload begins with colon-separated header integers whose
-	// positions are partially mapped: index=1 is sw_version, index=2..4 are
-	// pe0..pe2. Other indices are present in real captures but not yet
-	// fully identified. The metric is labelled by zero-based position so that
-	// any new index introduced by a firmware update surfaces immediately in
-	// dashboards and alerts.
+	// Positional header gauge — kept for backward compatibility and to surface
+	// unexpected field additions from future firmware versions automatically.
 	solarErrInfoHeaderValue = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name:        "marstek_cloud_solar_errinfo_header_value",
-		Help:        "Integer values from the puterrinfo request header, keyed by zero-based positional index. index=1 is sw_version; index=2..4 are pe0..pe2; other indices are not yet fully identified.",
+		Help:        "Integer values from the puterrinfo request header, keyed by zero-based positional index. index=0 is report_type; index=1 is sw_version; index=2..5 are status/flag fields. See emulator/solar_errinfo.go for full field map.",
 		ConstLabels: constLabels,
 	}, []string{"index"})
 	reg.MustRegister(solarErrInfoHeaderValue)
+
+	// Named header gauges — derived from Ghidra analysis of puterrinfo_state_machine.
+	solarErrInfoReportType = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_report_type",
+		Help:        "Report type from the puterrinfo header: 0=battery slot 0 (triples), 1=slot 1 (quintuples), 2=slot 2 (quintuples).",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery"})
+	reg.MustRegister(solarErrInfoReportType)
+
+	solarErrInfoSwVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_sw_version",
+		Help:        "Firmware software version number from the puterrinfo header (header[1]).",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery"})
+	reg.MustRegister(solarErrInfoSwVersion)
+
+	solarErrInfoField2 = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_field2",
+		Help:        "puterrinfo header field 2 (header[2]); likely SoC % or a battery voltage field. Exact semantics TBC against a live capture.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery"})
+	reg.MustRegister(solarErrInfoField2)
+
+	solarErrInfoField3 = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_field3",
+		Help:        "puterrinfo header field 3 (header[3]); status flags byte at battery_state+0x4d/0xde/0x16f.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery"})
+	reg.MustRegister(solarErrInfoField3)
+
+	solarErrInfoField4 = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_field4",
+		Help:        "puterrinfo header field 4 (header[4]); status flags byte at battery_state+0x4e/0xdf/0x170.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery"})
+	reg.MustRegister(solarErrInfoField4)
+
+	solarErrInfoField5 = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_field5",
+		Help:        "puterrinfo header field 5 (header[5]); status flags byte at battery_state+0x4f/0xe0/0x171.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery"})
+	reg.MustRegister(solarErrInfoField5)
+
+	// Per-event counters and timestamps — labelled with the human-readable code
+	// name so Grafana panels are self-documenting.
+	solarErrInfoEventTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name:        "marstek_solar_errinfo_event_total",
+		Help:        "Total puterrinfo events received, labelled by uid, battery slot, numeric code, and human-readable name from the Ghidra-derived dictionary.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery", "code", "name"})
+	reg.MustRegister(solarErrInfoEventTotal)
+
+	solarErrInfoLastEventTS = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_last_event_ts_seconds",
+		Help:        "Unix timestamp of the most recently received puterrinfo event for each (uid, battery, code, name) combination.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery", "code", "name"})
+	reg.MustRegister(solarErrInfoLastEventTS)
 
 	return
 }

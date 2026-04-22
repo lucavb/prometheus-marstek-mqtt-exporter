@@ -332,6 +332,62 @@ table below. `uboot_version` tracks the STM32 bootloader image separately
 from the application blob, and is not exposed in any of the public
 version strings.
 
+## Ghidra analysis — puterrinfo.php (B2500 error event log)
+
+The error/event upload endpoint `POST /app/Solar/puterrinfo.php` was fully
+decoded by loading `B2500_All_HMJ.bin` into Ghidra (ARM:LE:32:Cortex,
+base `0x08000000`, 576 functions, 2227 symbols) and using the
+[Ghidra MCP server](https://github.com/NationalSecurityAgency/ghidra-mcp)
+to automate renaming and struct creation.
+
+### How this was derived
+
+1. **Identified the body-builder** (`FUN_08011cf8`, renamed to
+   `puterrinfo_state_machine`) — a 12-state HTTP FSM. The body is assembled
+   in case 5 via `snprintf_append` calls.
+
+2. **Identified the event enqueue helper** (`FUN_0802152c`, renamed to
+   `enqueue_event(code:u8, value:u32)`) — walks all 95 call sites to extract
+   every `(code, trigger, value_semantics)` tuple.
+
+3. **Created data type structs** in Ghidra:
+   - `errinfo_event { u8 code; u8 _pad[3]; u32 ts_unix; u32 value; }` (12 B)
+   - `errinfo_ring { u32 count; errinfo_event entries[42]; }` (508 B)
+     applied to `g_errinfo_ring_ptr` (`0x080215ac`).
+
+4. **Labelled globals**:
+   - `g_errinfo_ring_ptr` (`0x080215ac`) — pointer to the event ring
+   - `g_errinfo_dedup_state` (`0x080215b0`) — dedup (last_code, last_value)
+   - `g_unix_time_ptr` (`0x080215b4`) — pointer to current Unix ts
+   - `g_device_state` (`0x08012178`) — device state struct (6.3 KiB)
+   - `g_battery0_state` (`0x0801217c`) — first per-battery sub-struct
+
+5. **Decoded the three report types** from flags at `g_device_state + 0x588/9/a`:
+   - Type 0 (slot 0): 42 × triple events `code.ts.value`
+   - Type 1 (slot 1): quintuple events `a.b.c.d.value` from ring at `+0x200`
+   - Type 2 (slot 2): quintuple events from ring at `+0x3c8`
+
+6. **Decoded the six header integer fields** by tracing the `snprintf_append`
+   arguments in case 5 back to offsets in the per-battery state struct:
+   `sw_version`, and 5 status/flag fields.
+
+7. **Built the 49-code event dictionary** by inspecting every call site of
+   `enqueue_event` and reading the surrounding decompiled logic for trigger
+   condition and value semantics. All 49 codes across the 95 call sites are
+   now named — including the previously opaque `33`, `74`, `78`, `80–82`,
+   `85–88`, `95`, `104–106` which trace to the Shelly CT meter FSM, the
+   secondary (auxiliary) MQTT client used by `http_getdateinfo_fsm`, the
+   HTTP `setreport` response handler, `battery_pack_init_fsm`,
+   `battery_cell_fault_handler`, the TLS-cert provisioning sub-FSM in
+   `wifi_ap_config_fsm`, `battery_pack_reset`, `ble_adv_state_machine`, and
+   `wifi_connect_fsm` respectively. Full table in
+   `emulator/solar_errinfo_codes.go` and `docs/network.md`.
+
+The Ghidra project (`ghidra/firmware/`) contains all renames, struct
+definitions, and plate comments created during this analysis session.
+Running the analysis again from the raw binary produces the same results —
+no state is lost if the project is deleted.
+
 ## Firmware version scheme (HMJ branch)
 
 Firmware the B2500-D (HMJ) has been seen on:
