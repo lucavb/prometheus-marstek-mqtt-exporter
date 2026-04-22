@@ -154,8 +154,10 @@ func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
 
 // updateReportMetrics populates the cloud-report-only Prometheus gauges from
 // the parsed field map. Fields that are already exported by the MQTT collector
-// (soc, bi/bo, pv, iv, bid/bod/pvd/ivd, vs/svs, b0f/b1f/b2f) are skipped to
-// avoid double-counting.
+// (soc, bi/bo, pv, iv, bid/bod/pvd/ivd, vs/svs) are skipped to avoid
+// double-counting. Per-pack SoC (pe0/1/2) and fault flags (b0f/1/2f) are
+// exposed here because they are NOT present in the MQTT cd=0 payload — only
+// a single aggregate `pe` and three packed `a0/a1/a2` channels are.
 func (e *Emulator) updateReportMetrics(f map[string]string) {
 	// Per-pack cell voltage min/max and cell indices (packs 0–2).
 	for _, pack := range []string{"0", "1", "2"} {
@@ -171,6 +173,19 @@ func (e *Emulator) updateReportMetrics(f map[string]string) {
 		if v, ok := parseFloat(f["b"+pack+"minn"]); ok {
 			e.cellVoltageIndex.WithLabelValues(pack, "min").Set(v)
 		}
+		if v, ok := parseFloat(f["pe"+pack]); ok {
+			e.cloudBatteryPackSoC.WithLabelValues(pack).Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"f"]); ok {
+			e.batteryPackFaultFlags.WithLabelValues(pack).Set(v)
+		}
+	}
+
+	// Pack temperature — raw value, scale unverified. Captures show 105 when
+	// warm / 17 when cold, suggesting deci-Celsius but we publish the raw
+	// field and let the user decide.
+	if v, ok := parseFloat(f["tn"]); ok {
+		e.batteryPackTemperature.Set(v)
 	}
 
 	// Per-solar-input voltage and power (inputs 1–2).

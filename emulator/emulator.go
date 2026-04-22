@@ -28,13 +28,16 @@ type Emulator struct {
 	deviceInfo                  *prometheus.GaugeVec
 
 	// cloud-report-only metrics (not available via MQTT cd=1)
-	cellVoltageMillivolts *prometheus.GaugeVec // b{n}max/min
-	cellVoltageIndex      *prometheus.GaugeVec // b{n}maxn/minn
-	solarInputVoltage     *prometheus.GaugeVec // pv1v/pv2v
-	solarInputPower       *prometheus.GaugeVec // pv1/pv2 (watts)
-	outputVoltage         *prometheus.GaugeVec // out1v/out2v
-	cloudDeviceTimestamp  prometheus.Gauge
-	wifiBTStatus          prometheus.Gauge
+	cellVoltageMillivolts  *prometheus.GaugeVec // b{n}max/min
+	cellVoltageIndex       *prometheus.GaugeVec // b{n}maxn/minn
+	solarInputVoltage      *prometheus.GaugeVec // pv1v/pv2v
+	solarInputPower        *prometheus.GaugeVec // pv1/pv2 (watts)
+	outputVoltage          *prometheus.GaugeVec // out1v/out2v
+	cloudDeviceTimestamp   prometheus.Gauge
+	wifiBTStatus           prometheus.Gauge
+	cloudBatteryPackSoC    *prometheus.GaugeVec // pe0/pe1/pe2
+	batteryPackFaultFlags  *prometheus.GaugeVec // b0f/b1f/b2f
+	batteryPackTemperature prometheus.Gauge     // tn
 
 	// puterrinfo positional header — kept for backward compat and firmware-drift detection
 	solarErrInfoHeaderValue *prometheus.GaugeVec
@@ -74,6 +77,7 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		reportPayloadBytes, reportDecodeErrors, deviceInfo,
 		cellVoltageMillivolts, cellVoltageIndex, solarInputVoltage, solarInputPower,
 		outputVoltage, cloudDeviceTimestamp, wifiBTStatus,
+		cloudBatteryPackSoC, batteryPackFaultFlags, batteryPackTemperature,
 		solarErrInfoHeaderValue,
 		solarErrInfoReportType, solarErrInfoSwVersion,
 		solarErrInfoField2, solarErrInfoField3, solarErrInfoField4, solarErrInfoField5,
@@ -95,6 +99,9 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		outputVoltage:               outputVoltage,
 		cloudDeviceTimestamp:        cloudDeviceTimestamp,
 		wifiBTStatus:                wifiBTStatus,
+		cloudBatteryPackSoC:         cloudBatteryPackSoC,
+		batteryPackFaultFlags:       batteryPackFaultFlags,
+		batteryPackTemperature:      batteryPackTemperature,
 		solarErrInfoHeaderValue:     solarErrInfoHeaderValue,
 		solarErrInfoReportType:      solarErrInfoReportType,
 		solarErrInfoSwVersion:       solarErrInfoSwVersion,

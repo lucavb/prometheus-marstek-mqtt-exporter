@@ -20,6 +20,9 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	outputVoltage *prometheus.GaugeVec,
 	cloudDeviceTimestamp prometheus.Gauge,
 	wifiBTStatus prometheus.Gauge,
+	cloudBatteryPackSoC *prometheus.GaugeVec,
+	batteryPackFaultFlags *prometheus.GaugeVec,
+	batteryPackTemperature prometheus.Gauge,
 	solarErrInfoHeaderValue *prometheus.GaugeVec,
 	// Named puterrinfo metrics.
 	solarErrInfoReportType *prometheus.GaugeVec,
@@ -130,6 +133,41 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 		ConstLabels: constLabels,
 	})
 	reg.MustRegister(wifiBTStatus)
+
+	// Per-pack state-of-charge from the pe0/pe1/pe2 cloud-report fields. The
+	// MQTT `cd=0` path already exposes an aggregate `pe` (→ marstek_battery_soc_percent);
+	// this metric gives us per-pack visibility that is only present on the
+	// HTTP telemetry-report path. On single-pack devices, pe1/pe2 are 0.
+	cloudBatteryPackSoC = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_cloud_battery_pack_soc_percent",
+		Help:        "Per-pack state of charge in percent, from the pe0/pe1/pe2 fields of the cloud telemetry report. Unpopulated packs report 0.",
+		ConstLabels: constLabels,
+	}, []string{"pack"})
+	reg.MustRegister(cloudBatteryPackSoC)
+
+	// Per-pack fault-flag bitmap from the b0f/b1f/b2f cloud-report fields. The
+	// enqueue_event call site for code 75 (fault_flags_bitmap) in
+	// solar_errinfo_codes.go writes the same byte that appears here.
+	// Currently exposed as a raw number; a future phase can split it into
+	// named flag gauges once the individual bits are decoded.
+	batteryPackFaultFlags = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_battery_pack_fault_flags",
+		Help:        "Per-pack fault-flag bitmap, from the b0f/b1f/b2f fields of the cloud telemetry report. Non-zero means the pack has at least one active fault condition; see event code 75 (fault_flags_bitmap) in emulator/solar_errinfo_codes.go.",
+		ConstLabels: constLabels,
+	}, []string{"pack"})
+	reg.MustRegister(batteryPackFaultFlags)
+
+	// Pack temperature field `tn` from the cloud telemetry report. Scale is
+	// currently unverified — observed values 105 (warm operating) and 17
+	// (cold) suggest either integer deci-degrees Celsius or a packed
+	// bitfield. Exposed as a raw gauge until corroborated against
+	// a thermometer; do NOT interpret as plain Celsius until verified.
+	batteryPackTemperature = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        "marstek_battery_pack_temperature_raw",
+		Help:        "Raw tn field from the cloud telemetry report. Scale is currently unverified (likely deci-degrees Celsius or a packed bitfield). Do not divide by 10 without cross-checking against a physical thermometer.",
+		ConstLabels: constLabels,
+	})
+	reg.MustRegister(batteryPackTemperature)
 
 	// Positional header gauge — kept for backward compatibility and to surface
 	// unexpected field additions from future firmware versions automatically.

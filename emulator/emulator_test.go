@@ -2,10 +2,12 @@ package emulator
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -266,6 +268,9 @@ func TestReportCloudMetrics(t *testing.T) {
 		"marstek_output_voltage_millivolts",
 		"marstek_cloud_device_timestamp_seconds",
 		"marstek_wifi_bt_status",
+		"marstek_cloud_battery_pack_soc_percent",
+		"marstek_battery_pack_fault_flags",
+		"marstek_battery_pack_temperature_raw",
 	} {
 		if c := testutil.CollectAndCount(reg, name); c == 0 {
 			t.Errorf("metric %q has no series after a valid report", name)
@@ -287,6 +292,14 @@ func TestReportCloudMetrics(t *testing.T) {
 		{"marstek_output_voltage_millivolts", map[string]string{"output": "1"}, 30000},
 		{"marstek_output_voltage_millivolts", map[string]string{"output": "2"}, 30000},
 		{"marstek_wifi_bt_status", nil, 3},
+		// Synthetic fixture plaintext: pe0=50, pe1=0, pe2=0; b0f=1, b1f=0, b2f=0; tn=100.
+		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "0"}, 50},
+		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "1"}, 0},
+		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "2"}, 0},
+		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "0"}, 1},
+		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "1"}, 0},
+		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "2"}, 0},
+		{"marstek_battery_pack_temperature_raw", nil, 100},
 	}
 	for _, tc := range metricChecks {
 		gathered, err := reg.Gather()
@@ -324,6 +337,88 @@ func TestReportCloudMetrics(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("metric %s with labels %v not found", tc.name, tc.labels)
+		}
+	}
+}
+
+// TestMarstek6ReportReplay replays a synthetic AES-encrypted report blob whose
+// structure and BMS-adjacent field values mirror a real setB2500Report payload
+// captured in marstek-6.pcap (devid zeroed to keep personal data out of the
+// repo). Asserts the Phase 0 additions — per-pack SoC, fault flags, and the
+// raw tn temperature — plus the pre-existing cloud-only gauges, so any silent
+// parsing regression is caught.
+func TestMarstek6ReportReplay(t *testing.T) {
+	em, reg := newTestEmulator(t, time.UTC)
+	h := em.Handler()
+
+	ct, err := os.ReadFile("testdata/marstek6_report.bin")
+	if err != nil {
+		t.Fatalf("read marstek6 fixture: %v", err)
+	}
+	v := base64.URLEncoding.EncodeToString(ct)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/prod/api/v1/setB2500Report?v="+v,
+		nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	// Phase 0: per-pack SoC (pe0..pe2) and fault flags (b0f..b2f) must be
+	// populated with the fixture values.
+	phase0Checks := []struct {
+		name   string
+		labels map[string]string
+		want   float64
+	}{
+		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "0"}, 23},
+		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "1"}, 0},
+		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "2"}, 0},
+		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "0"}, 2},
+		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "1"}, 0},
+		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "2"}, 0},
+		{"marstek_battery_pack_temperature_raw", nil, 17},
+		// Sanity: pre-existing cloud-only metrics must still populate from this payload.
+		{"marstek_cell_voltage_millivolts", map[string]string{"pack": "0", "bound": "max"}, 3309},
+		{"marstek_cell_voltage_millivolts", map[string]string{"pack": "0", "bound": "min"}, 3307},
+	}
+	gathered, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("registry.Gather: %v", err)
+	}
+	for _, tc := range phase0Checks {
+		found := false
+		for _, mf := range gathered {
+			if mf.GetName() != tc.name {
+				continue
+			}
+			for _, m := range mf.GetMetric() {
+				match := true
+				for wk, wv := range tc.labels {
+					lmatch := false
+					for _, lp := range m.GetLabel() {
+						if lp.GetName() == wk && lp.GetValue() == wv {
+							lmatch = true
+							break
+						}
+					}
+					if !lmatch {
+						match = false
+						break
+					}
+				}
+				if match {
+					if got := m.GetGauge().GetValue(); got != tc.want {
+						t.Errorf("%s%v = %v, want %v", tc.name, tc.labels, got, tc.want)
+					}
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("metric %s with labels %v not found in marstek-6 replay", tc.name, tc.labels)
 		}
 	}
 }

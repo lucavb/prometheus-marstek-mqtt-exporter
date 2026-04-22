@@ -33,6 +33,8 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_output_enabled`                | `output` (1, 2)     | Output enabled state (1=on, 0=off)                        |
 | `marstek_temperature_celsius`           | `sensor` (min, max) | Device temperature in Celsius                             |
 | `marstek_extra_pack_connected`          | `pack` (1, 2)       | Extra battery pack connected (1=yes, 0=no)                |
+| `marstek_battery_pack_soc_percent`      | `pack` (0, 1, 2)    | Per-pack state of charge. `pack=0` is the aggregate `pe`; `pack=1`/`pack=2` are the `a1`/`a2` channels |
+| `marstek_mqtt_m_channel`                | `channel` (0–3)     | Raw `m0`..`m3` channels from cd=0. Semantics partially decoded (m3 ≈ load watts); keep for anomaly detection |
 | `marstek_scrapes_total`                 |                     | Total number of cd=1 polls sent                           |
 | `marstek_scrape_errors_total`           |                     | Polls that received no response within the timeout        |
 
@@ -56,6 +58,9 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_output_voltage_millivolts`                    | `output` (1, 2)                                                                               | Per-output-port voltage in millivolts, from the cloud telemetry report.                                                                 |
 | `marstek_cloud_device_timestamp_seconds`               |                                                                                               | Device self-reported local time as a Unix timestamp. Use to detect clock drift.                                                         |
 | `marstek_wifi_bt_status`                               |                                                                                               | Raw `wbs` field from the cloud telemetry report, indicating Wi-Fi/Bluetooth connectivity state.                                         |
+| `marstek_cloud_battery_pack_soc_percent`               | `pack` (0, 1, 2)                                                                              | Per-pack state of charge from the `pe0`/`pe1`/`pe2` cloud-report fields. Distinct from the MQTT `marstek_battery_pack_soc_percent`: the HTTP path is authoritative when both are populated, but the MQTT series updates faster. |
+| `marstek_battery_pack_fault_flags`                     | `pack` (0, 1, 2)                                                                              | Per-pack fault-flag bitmap from `b0f`/`b1f`/`b2f`. Non-zero means the pack has at least one active fault condition (see event code 75 `fault_flags_bitmap`). |
+| `marstek_battery_pack_temperature_raw`                 |                                                                                               | Raw `tn` field from the cloud telemetry report. Scale unverified (likely deci-Celsius or a packed bitfield); do **not** divide by 10 without cross-checking against a physical thermometer. |
 
 
 `marstek_up` is strictly tied to MQTT. Cloud reachability is tracked independently via `marstek_cloud_last_report_timestamp_seconds`.
@@ -200,12 +205,15 @@ A single captured sample (firmware `HMJ-2 fcv=202310231502`) decrypts to **51 fi
 | Field(s) | Description |
 |---|---|
 | `b0max`, `b0min`, `b0maxn`, `b0minn` (also `b1*`/`b2*`) | Per-pack min/max cell voltage (mV) and cell index |
+| `pe0`, `pe1`, `pe2` | Per-pack state of charge (%). The MQTT `cd=0` path only carries the aggregate `pe` plus `a0`/`a1`/`a2` channels |
+| `b0f`, `b1f`, `b2f` | Per-pack fault-flag bitmap. Non-zero means an active fault; same byte as event code 75 (`fault_flags_bitmap`) in `emulator/solar_errinfo_codes.go` |
+| `tn` | Pack temperature — scale unverified (likely deci-Celsius or a packed bitfield) |
 | `pv1v`, `pv2v` | Per-solar-input voltage (mV) |
 | `out1v`, `out2v` | Per-output-port voltage (mV) |
 | `wbs` | Wi-Fi/Bluetooth status |
 | `date` | Device self-reported local time |
 
-The emulator decrypts every incoming report and exposes these as the `marstek_cell_voltage_millivolts`, `marstek_solar_input_voltage_millivolts`, `marstek_output_voltage_millivolts`, `marstek_wifi_bt_status`, and `marstek_cloud_device_timestamp_seconds` metrics. Fields already exported via MQTT are not re-exported.
+The emulator decrypts every incoming report and exposes these as the `marstek_cell_voltage_millivolts`, `marstek_cloud_battery_pack_soc_percent`, `marstek_battery_pack_fault_flags`, `marstek_battery_pack_temperature_raw`, `marstek_solar_input_voltage_millivolts`, `marstek_output_voltage_millivolts`, `marstek_wifi_bt_status`, and `marstek_cloud_device_timestamp_seconds` metrics. Fields already exported via MQTT are not re-exported.
 
 If a future firmware version rotates the key, `marstek_cloud_report_decode_errors_total` will increment and a `WARN` log line will appear. The reproduction script `scripts/crack_report.py` can be run against new pcap captures to recover a new key:
 
@@ -220,6 +228,14 @@ uv run --with pycryptodome --python 3.12 \
 **Prior art:** [`tomquist/marsrelay`](https://github.com/tomquist/marsrelay) and [`fignew/MarstACK`](https://github.com/fignew/MarstACK) both proxy this endpoint but treat `v=` as opaque. As of this writing, the AES-128-ECB key and plaintext schema have not been published elsewhere.
 
 **Credits:** [`tomquist/hame-relay`](https://github.com/tomquist/hame-relay), [`tomquist/esphome-b2500`](https://github.com/tomquist/esphome-b2500), and [`tomquist/hm2mqtt`](https://github.com/tomquist/hm2mqtt) provided the MQTT-side groundwork and established that Hame firmware consistently uses short ASCII brand-name strings as AES keys.
+
+**What this repo adds beyond prior art:** All three of the above projects, plus the community work on Hame/Marstek in general, focus on the MQTT and HTTP surfaces visible from outside the device. This repository is believed to be the first to publish:
+
+- The `hamedatahamedata` AES-128-ECB key with a complete 51-field plaintext schema for `setB2500Report`.
+- A full reverse-engineered decode of the 49-event `puterrinfo` error log, including trigger conditions and value semantics for every event code.
+- The BLE OTA protocol at the packet level: GATT service `FF00`, characteristics `ff01`/`ff02`/`ff06`, opcode table, checksum algorithm, and the unauthenticated-RCE security finding. See [`docs/ota.md`](docs/ota.md).
+- The Main MCU ↔ BMS I²C2 link: frame format, command table, charge/discharge algorithm literals, and the boundary between MCU-side and BMS-side logic. See [`docs/bms-protocol.md`](docs/bms-protocol.md).
+- A working local cloud emulator that keeps the device stable offline, exposing 15+ additional metrics not available via MQTT.
 
 ### Discovery of new firmware endpoints
 
@@ -257,6 +273,40 @@ Example LogQL query in Grafana:
 ```
 
 For local development the binary uses plain text output. Switch to JSON explicitly with `--log-format json`.
+
+## Security findings
+
+Two independent security findings have been documented from static analysis of
+`firmware/B2500_All_HMJ.bin` and the companion Android app.
+
+**1. Unauthenticated BLE OTA (remote code execution)**
+
+Any BLE client within ~10 m can flash arbitrary firmware onto the B2500-D MCU.
+No authentication, no pairing, no cryptographic signature — the only integrity
+check is a `~sum()` byte-sum that is trivially forgeable. This is a remote code
+execution primitive on a grid-tied power device.
+
+Full write-up: [`docs/ota.md`](docs/ota.md)
+
+**2. Shared AES-128-ECB key in cloud telemetry**
+
+The `v=` parameter on `GET /prod/api/v1/setB2500Report` is AES-128-ECB with the
+fixed key `hamedatahamedata`. The same key also encrypts the AWS IoT mTLS
+credentials embedded in the firmware image. The key is embedded in the firmware
+binary and was extracted from network captures.
+
+See [§ Telemetry report encryption](#telemetry-report-encryption) below.
+
+## Protocol + firmware reference
+
+Deep-dive documentation lives under [`docs/`](docs/):
+
+- [`docs/ota.md`](docs/ota.md) — BLE OTA protocol, flash layout, integrity check, threat model, APK corroboration, and security implications.
+- [`docs/mqtt.md`](docs/mqtt.md) — MQTT topic layout, `cd=` command set, and per-field semantics (including which fields each Prometheus gauge is derived from).
+- [`docs/firmware.md`](docs/firmware.md) — static-analysis notes on `firmware/B2500_All_HMJ.bin`: hardware target, AES key derivation, Ghidra symbols.
+- [`docs/bms-protocol.md`](docs/bms-protocol.md) — reverse-engineered Main MCU ↔ BMS link (I²C2 @ `0x40005800` runtime bus + GPIO bit-bang boot probe), frame format, command table, charging-algorithm literals, and the hardware-tap path needed to unlock per-cell telemetry. Closes roadmap items 12 + 13.
+- [`docs/roadmap.md`](docs/roadmap.md) — open and completed reverse-engineering items.
+- [`scripts/probe_cd.py`](scripts/probe_cd.py) — read-only probe that enumerates `cd=` query responses against a live device (dry-run by default; opt-in to live transmission with `--i-know-what-im-doing`).
 
 ## Build
 
