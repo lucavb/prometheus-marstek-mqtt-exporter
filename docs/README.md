@@ -19,6 +19,7 @@ These docs capture what was learned from:
 | [`mqtt.md`](mqtt.md) | MQTT topic structure and telemetry payload fields |
 | [`firmware.md`](firmware.md) | Firmware download URLs, binary format, version history |
 | [`apk-analysis.md`](apk-analysis.md) | How the Flutter APK was dissected and what was extracted |
+| [`roadmap.md`](roadmap.md) | Open reverse-engineering leads and nice-to-have follow-ups |
 
 ## TL;DR
 

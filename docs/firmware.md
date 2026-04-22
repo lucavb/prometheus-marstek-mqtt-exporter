@@ -332,6 +332,19 @@ table below. `uboot_version` tracks the STM32 bootloader image separately
 from the application blob, and is not exposed in any of the public
 version strings.
 
+## OTA update mechanism
+
+The BLE OTA protocol, flash layout, integrity check (`~sum()` byte-sum — not a
+CRC), security findings, and APK corroboration are fully documented in
+[`docs/ota.md`](ota.md).
+
+Short summary: the MCU OTA is BLE-only (phone app streams the image), requires
+no authentication or pairing, and uses a trivially forgeable `~sum()` integrity
+check with no cryptographic signature. Any BLE client within ~10 m can flash
+arbitrary firmware.
+
+---
+
 ## Ghidra analysis — puterrinfo.php (B2500 error event log)
 
 The error/event upload endpoint `POST /app/Solar/puterrinfo.php` was fully
@@ -387,6 +400,34 @@ The Ghidra project (`ghidra/firmware/`) contains all renames, struct
 definitions, and plate comments created during this analysis session.
 Running the analysis again from the raw binary produces the same results —
 no state is lost if the project is deleted.
+
+## Ghidra analysis — BMS link (I²C2 + GPIO bit-bang)
+
+The "Main MCU ↔ BMS" pass (roadmap items 12 + 13) is written up in
+detail in [`bms-protocol.md`](bms-protocol.md). Short summary of the
+symbols created in the Ghidra DB during that pass:
+
+- `bms_bitbang_xfer_byte` (`0x0801b3a8`) + GPIO helpers — one-shot boot
+  pack-identity probe over **GPIOB PB3/PB4/PB5**. Enumerates 6 pack-ID
+  registers via commands `0x81`/`0x83`/`0x85`/`0x87`/`0x89`/`0x8D`. No
+  live telemetry on this surface.
+- `bms_i2c_xfer` (`0x08023d5c`), `bms_i2c_read_byte`,
+  `bms_i2c_queue_cmd`, `bms_clear_fault`, `bms_set_charge_enable`,
+  `bms_set_discharge_enable` — runtime BMS bus on **I²C2
+  (`0x40005800`)**, slave address `0x40`, framed as
+  `[0x34][cmd][len][payload...][0x35]` with a tail checksum. Only
+  fault-clear commands (`0x11` / `0x22`) are issued from the main MCU;
+  the read-side is an autonomous byte-stream pull by
+  `battery_data_poll_fsm`.
+- Labels `g_bms_gpio_port_ptr_init`, `g_bms_gpio_port_ptr_rx`
+  (GPIOB base), `g_bms_i2c2_base_ptr` (I²C2 base).
+
+**Finding that matters for the exporter:** per-cell voltages,
+coulomb counts, and SoH are **not** exchanged over any software-visible
+surface (MQTT, HTTP, BLE). They live entirely inside the BMS firmware
+and are summarised to pack-level min/max before reaching the main
+MCU. Extracting them requires a hardware I²C sniffer on PB10/PB11.
+See `docs/bms-protocol.md` §"Hardware-tap follow-up".
 
 ## Firmware version scheme (HMJ branch)
 

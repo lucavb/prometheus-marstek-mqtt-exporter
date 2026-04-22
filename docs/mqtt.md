@@ -79,14 +79,14 @@ kept for future investigation.
 | `tc`, `tf` | Temperature flags | — |
 | `fc` | Firmware compile timestamp (`YYYYMMDDHHMM`) | — |
 | `id` | Some device-role id | — |
-| `a0`, `a1`, `a2` | Aggregate / battery % channels | — |
+| `a0`, `a1`, `a2` | Per-pack state of charge: `a0` is the aggregate (equals `pe` in every capture we have); `a1` is pack 1 SoC; `a2` is pack 2 SoC. Single-pack devices (B2500-D) leave `a1`/`a2` at 0 | % |
 | `l0`, `l1` | Load flags | — |
 | `c0`, `c1` | CT / current-sensor channels | — |
 | `bc` | Battery cycle count (or charging counter) | — |
 | `bs` | Battery state counter | — |
 | `pt` | Total PV input (Wh) | Wh |
 | `it` | Input total | Wh |
-| `m0..m3` | Per-pack metrics | — |
+| `m0..m3` | Per-pack metric channels. `m3` tracks the load watts (matches `lv`) in captured traffic; `m0`..`m2` are unverified per-pack values. Exposed as `marstek_mqtt_m_channel{channel}` for anomaly detection until fully decoded | — |
 | `lmo`, `lmi`, `lmf` | Lifetime metering counters (output / input / feed) | Wh |
 | `uv` | Under-voltage threshold | — |
 | `sm` | Smartmeter flag | bool |
