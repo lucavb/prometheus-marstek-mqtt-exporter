@@ -1,6 +1,7 @@
 package emulator
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -33,12 +34,59 @@ const (
 	pathSolarErrInfo = "/app/Solar/puterrinfo.php"
 )
 
-// corsHeaders are the CORS headers observed in both pcap captures.
-var corsHeaders = map[string]string{
+// corsHeadersBackendA are the CORS headers emitted by the direct-PHP backend
+// (Backend A) that serves /app/neng/getDateInfoeu.php. This backend does NOT
+// run behind Kong and sends the full explicit CORS block.
+var corsHeadersBackendA = map[string]string{
 	"Access-Control-Allow-Headers": "Content-Type, Authorization, Token, X-Requested-With, Origin, Accept, Accept-Language, Content-Language",
 	"Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
 	"Access-Control-Allow-Origin":  "*",
 	"Access-Control-Max-Age":       "1728000",
+}
+
+// randomHexID returns 32 lowercase hex characters (16 random bytes), matching
+// the format used by the real server for Trace-Id and X-Kong-Request-Id.
+func randomHexID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// writeDateInfoHeaders sets response headers that match Backend A
+// (getDateInfoeu.php): full CORS block, Trace-Id, Connection: keep-alive,
+// Transfer-Encoding: chunked. Must be called before WriteHeader.
+func writeDateInfoHeaders(w http.ResponseWriter, startedAt time.Time) {
+	h := w.Header()
+	for k, v := range corsHeadersBackendA {
+		h.Set(k, v)
+	}
+	h.Set("Connection", "keep-alive")
+	h.Set("Transfer-Encoding", "chunked")
+	h.Set("Trace-Id", randomHexID())
+	// Suppress Content-Length so Go does not override chunked framing.
+	h.Del("Content-Length")
+	_ = startedAt // retained in signature for symmetry with writeKongHeaders
+}
+
+// writeKongHeaders sets response headers that match Backend B (Kong 3.9.1 +
+// PHP 8.1.2): vary, CORS credentials, Via, X-Kong-* timing/request-id, and
+// optionally X-Powered-By. Must be called before WriteHeader.
+//
+// withPHP should be true for puterrinfo.php (PHP-generated response) and false
+// for setB2500Report (JSON API response without the PHP header).
+func writeKongHeaders(w http.ResponseWriter, startedAt time.Time, withPHP bool) {
+	elapsed := time.Since(startedAt).Milliseconds()
+	h := w.Header()
+	h.Set("Vary", "Origin")
+	h.Set("Access-Control-Allow-Credentials", "true")
+	h.Set("Via", "1.1 kong/3.9.1")
+	h.Set("X-Kong-Request-Id", randomHexID())
+	h.Set("X-Kong-Upstream-Latency", strconv.FormatInt(elapsed, 10))
+	h.Set("X-Kong-Proxy-Latency", "1")
+	h.Set("Connection", "keep-alive")
+	if withPHP {
+		h.Set("X-Powered-By", "PHP/8.1.2")
+	}
 }
 
 // Emulator emulates the eu.hamedata.com cloud server that Marstek battery
@@ -207,16 +255,11 @@ func (e *Emulator) Handler() http.Handler {
 	return mux
 }
 
-// setCORSHeaders writes the CORS headers observed in the pcap captures.
-func setCORSHeaders(w http.ResponseWriter) {
-	for k, v := range corsHeaders {
-		w.Header().Set(k, v)
-	}
-}
-
 // handleDateInfo serves the time-sync response and populates marstek_device_info
 // from query string parameters.
 func (e *Emulator) handleDateInfo(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+
 	slog.Debug("cloud emulator: date-info request",
 		"method", r.Method,
 		"path", r.URL.Path,
@@ -244,19 +287,25 @@ func (e *Emulator) handleDateInfo(w http.ResponseWriter, r *http.Request) {
 	// ZZ = UTC offset in half-hours, zero-padded to two digits.
 	zz := offsetSec / 1800
 
-	setCORSHeaders(w)
+	writeDateInfoHeaders(w, startedAt)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, "_%04d_%02d_%02d_%02d_%02d_%02d_%02d_0_0_0\n",
+	body := fmt.Sprintf("_%04d_%02d_%02d_%02d_%02d_%02d_%02d_0_0_0\n",
 		now.Year(), now.Month(), now.Day(),
 		now.Hour(), now.Minute(), now.Second(),
 		zz,
 	)
+	_, _ = io.WriteString(w, body)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // handleReport acknowledges a setB2500Report telemetry upload, decrypts the
 // payload, and updates Prometheus metrics for the cloud-only telemetry fields.
 func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+
 	slog.Debug("cloud emulator: telemetry report request",
 		"method", r.Method,
 		"path", r.URL.Path,
@@ -290,7 +339,7 @@ func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
 	e.reportsTotal.WithLabelValues(endpointReport).Inc()
 	e.lastReportTimestamp.WithLabelValues(endpointReport).Set(float64(time.Now().Unix()))
 
-	setCORSHeaders(w)
+	writeKongHeaders(w, startedAt, false)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", "21")
 	w.WriteHeader(http.StatusOK)
@@ -354,8 +403,10 @@ func (e *Emulator) updateReportMetrics(f map[string]string) {
 // safe best-effort parse (so operators can validate the schema hypothesis), and
 // then discarded. No per-event metrics are collected in this pass.
 func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+
 	var (
-		raw          []byte
+		raw           []byte
 		bodyTruncated bool
 	)
 	if r.ContentLength != 0 {
@@ -396,10 +447,15 @@ func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("cloud emulator: solar errinfo upload", attrs...)
 
-	setCORSHeaders(w)
+	writeKongHeaders(w, startedAt, true)
 	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Del("Content-Length")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, "_1")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // handleUnknown catches any path not matched above, logs it at warn level
@@ -458,7 +514,6 @@ func (e *Emulator) handleUnknown(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	setCORSHeaders(w)
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, "404 page not found\n")
 }

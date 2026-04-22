@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,23 @@ func TestDateInfoHeaders(t *testing.T) {
 	if origin := rr.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
 		t.Errorf("unexpected CORS origin: %q", origin)
 	}
+	if conn := rr.Header().Get("Connection"); conn != "keep-alive" {
+		t.Errorf("unexpected Connection: %q", conn)
+	}
+	if te := rr.Header().Get("Transfer-Encoding"); te != "chunked" {
+		t.Errorf("unexpected Transfer-Encoding: %q", te)
+	}
+	traceID := rr.Header().Get("Trace-Id")
+	if !isHex32(traceID) {
+		t.Errorf("Trace-Id %q is not 32 lowercase hex chars", traceID)
+	}
+	// Backend A does NOT use Kong — these headers must be absent.
+	if v := rr.Header().Get("Via"); v != "" {
+		t.Errorf("unexpected Via header on date-info endpoint: %q", v)
+	}
+	if v := rr.Header().Get("X-Kong-Request-Id"); v != "" {
+		t.Errorf("unexpected X-Kong-Request-Id on date-info endpoint: %q", v)
+	}
 }
 
 func TestDateInfoDeviceInfoMetric(t *testing.T) {
@@ -174,6 +192,41 @@ func TestReportResponse(t *testing.T) {
 	}
 	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("unexpected Content-Type: %q", ct)
+	}
+	if cl := rr.Header().Get("Content-Length"); cl != "21" {
+		t.Errorf("unexpected Content-Length: %q", cl)
+	}
+
+	// Backend B (Kong) headers must be present.
+	if via := rr.Header().Get("Via"); via != "1.1 kong/3.9.1" {
+		t.Errorf("unexpected Via: %q", via)
+	}
+	if cred := rr.Header().Get("Access-Control-Allow-Credentials"); cred != "true" {
+		t.Errorf("unexpected Access-Control-Allow-Credentials: %q", cred)
+	}
+	if vary := rr.Header().Get("Vary"); vary != "Origin" {
+		t.Errorf("unexpected Vary: %q", vary)
+	}
+	if proxy := rr.Header().Get("X-Kong-Proxy-Latency"); proxy != "1" {
+		t.Errorf("unexpected X-Kong-Proxy-Latency: %q", proxy)
+	}
+	if _, err := strconv.Atoi(rr.Header().Get("X-Kong-Upstream-Latency")); err != nil {
+		t.Errorf("X-Kong-Upstream-Latency is not numeric: %q", rr.Header().Get("X-Kong-Upstream-Latency"))
+	}
+	if reqID := rr.Header().Get("X-Kong-Request-Id"); !isHex32(reqID) {
+		t.Errorf("X-Kong-Request-Id %q is not 32 lowercase hex chars", reqID)
+	}
+
+	// Backend A (full CORS block) must be absent on this endpoint.
+	if v := rr.Header().Get("Access-Control-Allow-Origin"); v != "" {
+		t.Errorf("unexpected Access-Control-Allow-Origin on report endpoint: %q", v)
+	}
+	if v := rr.Header().Get("Trace-Id"); v != "" {
+		t.Errorf("unexpected Trace-Id on report endpoint: %q", v)
+	}
+	// setB2500Report is not PHP-generated — no X-Powered-By.
+	if v := rr.Header().Get("X-Powered-By"); v != "" {
+		t.Errorf("unexpected X-Powered-By on report endpoint: %q", v)
 	}
 }
 
@@ -380,6 +433,86 @@ func TestUnknownEndpointRateLimit(t *testing.T) {
 	if warnCount != 1 {
 		t.Errorf("expected exactly 1 warn log for rapid duplicate unknown path, got %d", warnCount)
 	}
+}
+
+func TestSolarErrInfoHeaders(t *testing.T) {
+	em, _ := newTestEmulator(t, time.UTC)
+	h := em.Handler()
+
+	body := strings.NewReader("3601115030374d33300f1365:0:110:22:0:0:131:84.1776750259.0,")
+	req := httptest.NewRequest(http.MethodPost, "/app/Solar/puterrinfo.php", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.ContentLength = int64(body.Len())
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if b := rr.Body.String(); b != "_1" {
+		t.Errorf("unexpected body: %q", b)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "text/html; charset=UTF-8" {
+		t.Errorf("unexpected Content-Type: %q", ct)
+	}
+	if te := rr.Header().Get("Transfer-Encoding"); te != "chunked" {
+		t.Errorf("unexpected Transfer-Encoding: %q", te)
+	}
+	if via := rr.Header().Get("Via"); via != "1.1 kong/3.9.1" {
+		t.Errorf("unexpected Via: %q", via)
+	}
+	if cred := rr.Header().Get("Access-Control-Allow-Credentials"); cred != "true" {
+		t.Errorf("unexpected Access-Control-Allow-Credentials: %q", cred)
+	}
+	if vary := rr.Header().Get("Vary"); vary != "Origin" {
+		t.Errorf("unexpected Vary: %q", vary)
+	}
+	if php := rr.Header().Get("X-Powered-By"); php != "PHP/8.1.2" {
+		t.Errorf("unexpected X-Powered-By: %q", php)
+	}
+	if proxy := rr.Header().Get("X-Kong-Proxy-Latency"); proxy != "1" {
+		t.Errorf("unexpected X-Kong-Proxy-Latency: %q", proxy)
+	}
+	if _, err := strconv.Atoi(rr.Header().Get("X-Kong-Upstream-Latency")); err != nil {
+		t.Errorf("X-Kong-Upstream-Latency is not numeric: %q", rr.Header().Get("X-Kong-Upstream-Latency"))
+	}
+	if reqID := rr.Header().Get("X-Kong-Request-Id"); !isHex32(reqID) {
+		t.Errorf("X-Kong-Request-Id %q is not 32 lowercase hex chars", reqID)
+	}
+	// Backend A CORS headers must be absent on this Kong-fronted endpoint.
+	if v := rr.Header().Get("Access-Control-Allow-Origin"); v != "" {
+		t.Errorf("unexpected Access-Control-Allow-Origin on solar-errinfo endpoint: %q", v)
+	}
+	if v := rr.Header().Get("Trace-Id"); v != "" {
+		t.Errorf("unexpected Trace-Id on solar-errinfo endpoint: %q", v)
+	}
+}
+
+func TestRandomHexID(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		id := randomHexID()
+		if !isHex32(id) {
+			t.Errorf("randomHexID() = %q, want 32 lowercase hex chars", id)
+		}
+	}
+	// Two calls must not return the same value (collision probability 2^-128).
+	a, b := randomHexID(), randomHexID()
+	if a == b {
+		t.Errorf("randomHexID() returned identical values on consecutive calls: %q", a)
+	}
+}
+
+// isHex32 returns true if s consists of exactly 32 lowercase hexadecimal chars.
+func isHex32(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // captureHandler is a minimal slog.Handler that calls fn for each record.
