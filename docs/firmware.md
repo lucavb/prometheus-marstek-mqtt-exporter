@@ -120,12 +120,14 @@ uv run scripts/decode_fw_blobs.py  firmware/B2500_All_HMJ.bin
 
 ### Hardware target
 
-| Evidence | Conclusion |
-| --- | --- |
-| Vector table at `0x08000000`, thumb bit set on every handler | ARMv7-M / Cortex-M (Thumb-2) |
-| Refs to `0xE0042000` DBGMCU_IDCODE, `0x40021000` RCC, `0x40010000` AFIO | STM32F1-family (or pin-compatible GigaDevice GD32 clone) |
-| ~86 IRQ vectors after the 16-entry Cortex-M exception table | "Connectivity-line" STM32F1 (F105/F107) or GD32F1x0 equivalent |
-| Image size `0x29000` (164 KiB), initial SP `0x200030B0` | ≥ 192 KiB flash, ≥ 16 KiB SRAM part — most likely a GD32F103/F107 in a ≥ 256 KiB flash package |
+
+| Evidence                                                                | Conclusion                                                                                     |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Vector table at `0x08000000`, thumb bit set on every handler            | ARMv7-M / Cortex-M (Thumb-2)                                                                   |
+| Refs to `0xE0042000` DBGMCU_IDCODE, `0x40021000` RCC, `0x40010000` AFIO | STM32F1-family (or pin-compatible GigaDevice GD32 clone)                                       |
+| ~86 IRQ vectors after the 16-entry Cortex-M exception table             | "Connectivity-line" STM32F1 (F105/F107) or GD32F1x0 equivalent                                 |
+| Image size `0x29000` (164 KiB), initial SP `0x200030B0`                 | ≥ 192 KiB flash, ≥ 16 KiB SRAM part — most likely a GD32F103/F107 in a ≥ 256 KiB flash package |
+
 
 The reset handler at `0x080001b4` is the canonical **Keil MDK / µVision
 `__main` bootstrap** — `LDR r0, [PC,#0x18]; BLX r0` (→ `SystemInit`),
@@ -137,20 +139,22 @@ default infinite-loop fault handlers and `__aeabi_memcpy4` /
 
 From the block-entropy scan (`scripts/analyze_firmware.py`):
 
-| File range | Size | Content |
-| --- | --- | --- |
-| `0x00000 – 0x00400` | 1 KiB | Cortex-M vector table + IRQ vector table (~86 entries) |
-| `0x00400 – 0x03800` | 13 KiB | Startup / HAL / AT-command driver code |
-| `0x03800 – 0x04000` | 2 KiB | **Model-variant string table #1** (HMA-1…14, HMK-1…11, HMJ-1…14 × `"HM_B2500"`) |
-| `0x04000 – 0x07000` | 12 KiB | **Erased (`0xFF`)** — reserved hole, per-device config/calibration page populated at provisioning |
-| `0x07000 – 0x07800` | 2 KiB | Template config block: `0x00020018 0xFF21E8D2 0x11223344 0x55667788` then zeros |
-| `0x07800 – 0x24C00` | ~118 KiB | Main application (MQTT / BLE / HTTP / battery FSM) |
-| `0x24C00 – 0x26400` | 6 KiB | **16-bit lookup tables** (likely NTC temperature curve + battery OCV-SoC; values decrease monotonically in 2-byte steps) |
-| `0x26400 – 0x26D00` | ~2 KiB | Mixed code; contains the **AES S-boxes** |
-| `0x26820 / 0x26E7C / 0x2776C` | 1.2 / 1.7 / 1.2 KiB | **Three Base64-wrapped, AES-encrypted blobs** — TLS credentials pushed to the Quectel radio via `AT+QSSLCERT` |
-| `0x27C00 – 0x28800` | 3 KiB | Large `printf`-style MQTT report format strings |
-| `0x28800 – 0x28C00` | 1 KiB | Trailing code (version helpers / CRC dispatch table) |
-| `0x28C00 – 0x29000` | 1 KiB | Image tail: a small obfuscated table + `0xFF` padding |
+
+| File range                    | Size                | Content                                                                                                                  |
+| ----------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `0x00000 – 0x00400`           | 1 KiB               | Cortex-M vector table + IRQ vector table (~86 entries)                                                                   |
+| `0x00400 – 0x03800`           | 13 KiB              | Startup / HAL / AT-command driver code                                                                                   |
+| `0x03800 – 0x04000`           | 2 KiB               | **Model-variant string table #1** (HMA-1…14, HMK-1…11, HMJ-1…14 × `"HM_B2500"`)                                          |
+| `0x04000 – 0x07000`           | 12 KiB              | **Erased (`0xFF`)** — reserved hole, per-device config/calibration page populated at provisioning                        |
+| `0x07000 – 0x07800`           | 2 KiB               | Template config block: `0x00020018 0xFF21E8D2 0x11223344 0x55667788` then zeros                                          |
+| `0x07800 – 0x24C00`           | ~118 KiB            | Main application (MQTT / BLE / HTTP / battery FSM)                                                                       |
+| `0x24C00 – 0x26400`           | 6 KiB               | **16-bit lookup tables** (likely NTC temperature curve + battery OCV-SoC; values decrease monotonically in 2-byte steps) |
+| `0x26400 – 0x26D00`           | ~2 KiB              | Mixed code; contains the **AES S-boxes**                                                                                 |
+| `0x26820 / 0x26E7C / 0x2776C` | 1.2 / 1.7 / 1.2 KiB | **Three Base64-wrapped, AES-encrypted blobs** — TLS credentials pushed to the Quectel radio via `AT+QSSLCERT`            |
+| `0x27C00 – 0x28800`           | 3 KiB               | Large `printf`-style MQTT report format strings                                                                          |
+| `0x28800 – 0x28C00`           | 1 KiB               | Trailing code (version helpers / CRC dispatch table)                                                                     |
+| `0x28C00 – 0x29000`           | 1 KiB               | Image tail: a small obfuscated table + `0xFF` padding                                                                    |
+
 
 The 12 KiB erased gap at `0x4000` is a 3-page hole the OTA blob ships empty.
 Deployed devices almost certainly write their serial number, calibration
@@ -188,11 +192,13 @@ AT+QSSLCERT="User Key",2,%d
 
 the mapping is:
 
-| Offset | Decoded size | Almost certainly |
-| --- | --- | --- |
-| `0x26820` | 1 216 B | Root **CA** cert (DER, AES-encrypted, base64-wrapped) |
-| `0x26E7C` | 1 712 B | Client **User Cert** (device identity chain) |
-| `0x2776C` | 1 248 B | Client **User Key** (private key) |
+
+| Offset    | Decoded size | Almost certainly                                      |
+| --------- | ------------ | ----------------------------------------------------- |
+| `0x26820` | 1 216 B      | Root **CA** cert (DER, AES-encrypted, base64-wrapped) |
+| `0x26E7C` | 1 712 B      | Client **User Cert** (device identity chain)          |
+| `0x2776C` | 1 248 B      | Client **User Key** (private key)                     |
+
 
 The decryption key is stored elsewhere in the image (most likely in the
 low-entropy data region at `0x7000`, or as an immediate in the function
@@ -209,30 +215,34 @@ commands. The MCU does **not** run its own TCP/IP stack.
 
 Command surface by subsystem:
 
-| Subsystem | Commands used |
-| --- | --- |
-| BLE | `QBLEINIT`, `QBLEADDR?`, `QBLENAME`, `QBLEGATTSSRV`, `QBLEGATTSCHAR`, `QBLEADVPARAM`, `QBLEADVSTART/STOP`, `QBLEGATTSNTFY`, `QBLETRANMODE`, `QBLESTAT` |
-| HTTP | `QHTTPCFG "url"/"sslctxid"`, `QHTTPGET`, `QHTTPPOST`, `QHTTPREAD` |
-| Raw TCP/UDP | `QIOPEN=1,"UDP SERVICE"`, `QIOPEN=2,"TCP"`, `QISEND`, `QIRD`, `QICLOSE`, `QISTATE?` |
-| MQTT | `QMTOPEN`, `QMTCONN`, `QMTSUB`, `QMTPUB`, `QMTCLOSE`, `QMTCFG "ssl"/"version"/"datatype"/"keepalive"` |
-| TLS | `QSSLCERT "CA"/"User Cert"/"User Key"`, `QSSLCFG "verify"/"ciphersuite"/"version"` |
-| Wi-Fi | `QSTAAPINFODEF`, `QSTAST`, `QGETWIFISTATE`, `QGETIP=station`, `QWLANOTA` (radio firmware OTA), `QVERSION`, `QRST` |
+
+| Subsystem   | Commands used                                                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| BLE         | `QBLEINIT`, `QBLEADDR?`, `QBLENAME`, `QBLEGATTSSRV`, `QBLEGATTSCHAR`, `QBLEADVPARAM`, `QBLEADVSTART/STOP`, `QBLEGATTSNTFY`, `QBLETRANMODE`, `QBLESTAT` |
+| HTTP        | `QHTTPCFG "url"/"sslctxid"`, `QHTTPGET`, `QHTTPPOST`, `QHTTPREAD`                                                                                      |
+| Raw TCP/UDP | `QIOPEN=1,"UDP SERVICE"`, `QIOPEN=2,"TCP"`, `QISEND`, `QIRD`, `QICLOSE`, `QISTATE?`                                                                    |
+| MQTT        | `QMTOPEN`, `QMTCONN`, `QMTSUB`, `QMTPUB`, `QMTCLOSE`, `QMTCFG "ssl"/"version"/"datatype"/"keepalive"`                                                  |
+| TLS         | `QSSLCERT "CA"/"User Cert"/"User Key"`, `QSSLCFG "verify"/"ciphersuite"/"version"`                                                                     |
+| Wi-Fi       | `QSTAAPINFODEF`, `QSTAST`, `QGETWIFISTATE`, `QGETIP=station`, `QWLANOTA` (radio firmware OTA), `QVERSION`, `QRST`                                      |
+
 
 ### Cloud / LAN endpoints baked in
 
 Literal format strings, by purpose:
 
-| Kind | Template (from flash) |
-| --- | --- |
+
+| Kind                      | Template (from flash)                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------- |
 | Device enumeration (boot) | `http://%s.hamedata.com/app/neng/getDateInfo%s.php?uid=%s&fcv=%s&aid=%s&sv=%d&sbv=%d&mv=%d` |
-| Error reporting | `http://%s.hamedata.com/app/Solar/puterrinfo.php` |
-| Fire/fault lookup | `http://eu.hamedata.com/ems/api/v1/getDeviceFire?devid=%s` |
-| Real-time SoC | `http://%s.hamedata.com/ems/api/v1/getRealtimeSoc?devid=%s&type=%s` |
-| Daily telemetry | `http://%s.hamedata.com/prod/api/v1/setB2500Report?v=%s` |
-| Generic (MCU → radio) | `http://%s/v1/json` |
-| Cloud MQTT control topic | `hame_energy/<mac>/App/<app>/ctrl` **and** `marstek_energy/<mac>/App/<app>/ctrl` |
-| Cloud MQTT device topic | `hame_energy/<mac>/device/<mac>/ctrl` (+ `marstek_energy/…`) |
-| **LAN CT meter read** | `{"id":1,"method":"EM.GetStatus","params":{"id":0}}` and `EM1.GetStatus` |
+| Error reporting           | `http://%s.hamedata.com/app/Solar/puterrinfo.php`                                           |
+| Fire/fault lookup         | `http://eu.hamedata.com/ems/api/v1/getDeviceFire?devid=%s`                                  |
+| Real-time SoC             | `http://%s.hamedata.com/ems/api/v1/getRealtimeSoc?devid=%s&type=%s`                         |
+| Daily telemetry           | `http://%s.hamedata.com/prod/api/v1/setB2500Report?v=%s`                                    |
+| Generic (MCU → radio)     | `http://%s/v1/json`                                                                         |
+| Cloud MQTT control topic  | `hame_energy/<mac>/App/<app>/ctrl` **and** `marstek_energy/<mac>/App/<app>/ctrl`            |
+| Cloud MQTT device topic   | `hame_energy/<mac>/device/<mac>/ctrl` (+ `marstek_energy/…`)                                |
+| **LAN CT meter read**     | `{"id":1,"method":"EM.GetStatus","params":{"id":0}}` and `EM1.GetStatus`                    |
+
 
 The last row is significant: this is the **Shelly Pro EM / Shelly Gen2+
 JSON-RPC request**, sent over a local TCP socket opened with
@@ -248,13 +258,13 @@ They match the `ReportXXX` structs in `emulator/report.go`.
 
 Notable ones:
 
-- **`cd=221` full settings snapshot (~650 B)** at `0x027EB0` — includes
-  HMJ-only fields `fk_chg_*`, `fk_dsg_*`, `ct_t`, `tc_dis`, `fktc`,
-  `lmo/lmi/lmf`.
-- **`cd=222` CT state (~200 B)** at `0x028944`:
-  `ct_t=%d,phase_t=%d,dchrg_t=%d,seq_s=%d,c0=%d,c1=%d,c2=%d,cp=%d,op=%d`.
-- **`cd=206` calibration raw** at `0x028824` — a hex-indexed ADC
-  calibration dump with 48 `aN/bN/cN` triplets the cloud can poll.
+- `**cd=221` full settings snapshot (~650 B)** at `0x027EB0` — includes
+HMJ-only fields `fk_chg_`*, `fk_dsg_*`, `ct_t`, `tc_dis`, `fktc`,
+`lmo/lmi/lmf`.
+- `**cd=222` CT state (~200 B)** at `0x028944`:
+`ct_t=%d,phase_t=%d,dchrg_t=%d,seq_s=%d,c0=%d,c1=%d,c2=%d,cp=%d,op=%d`.
+- `**cd=206` calibration raw** at `0x028824` — a hex-indexed ADC
+calibration dump with 48 `aN/bN/cN` triplets the cloud can poll.
 
 ### BLE GATT schema (what the phone app connects to)
 
