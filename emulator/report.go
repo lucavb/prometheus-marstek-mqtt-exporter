@@ -5,7 +5,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 )
 
 // reportKey is the AES-128 key used by Marstek/Hame firmware to encrypt the
@@ -93,4 +98,106 @@ func pkcs7Unpad(b []byte) ([]byte, error) {
 		}
 	}
 	return b[:len(b)-pad], nil
+}
+
+// parseFloat parses s as a float64, returning 0 and false on failure.
+func parseFloat(s string) (float64, bool) {
+	v, err := strconv.ParseFloat(s, 64)
+	return v, err == nil
+}
+
+// handleReport acknowledges a setB2500Report telemetry upload, decrypts the
+// payload, and updates Prometheus metrics for the cloud-only telemetry fields.
+func (e *Emulator) handleReport(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+
+	slog.Debug("cloud emulator: telemetry report request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote_addr", r.RemoteAddr,
+		"user_agent", r.UserAgent(),
+	)
+
+	if v := r.URL.Query().Get("v"); v != "" {
+		plaintext, err := DecryptReport(v)
+		if err != nil {
+			e.reportDecodeErrors.Inc()
+			slog.Warn("cloud emulator: setB2500Report decrypt failed — firmware may have rotated the key",
+				"err", err,
+				"remote_addr", r.RemoteAddr,
+			)
+		} else {
+			// Keep the payload-size canary working.
+			e.reportPayloadBytes.Set(float64(len(plaintext)))
+
+			fields, parseErr := ParseReport(plaintext)
+			if parseErr != nil {
+				e.reportDecodeErrors.Inc()
+				slog.Warn("cloud emulator: setB2500Report parse failed", "err", parseErr)
+			} else {
+				slog.Debug("cloud emulator: setB2500Report decoded", "fields", fields)
+				e.updateReportMetrics(fields)
+			}
+		}
+	}
+
+	e.reportsTotal.WithLabelValues(endpointReport).Inc()
+	e.lastReportTimestamp.WithLabelValues(endpointReport).Set(float64(time.Now().Unix()))
+
+	writeKongHeaders(w, startedAt, false)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", "21")
+	w.WriteHeader(http.StatusOK)
+	// Fixed 21-byte body matching the real server response observed in the pcap.
+	_, _ = io.WriteString(w, `{"code":1,"msg":"ok"}`)
+}
+
+// updateReportMetrics populates the cloud-report-only Prometheus gauges from
+// the parsed field map. Fields that are already exported by the MQTT collector
+// (soc, bi/bo, pv, iv, bid/bod/pvd/ivd, vs/svs, b0f/b1f/b2f) are skipped to
+// avoid double-counting.
+func (e *Emulator) updateReportMetrics(f map[string]string) {
+	// Per-pack cell voltage min/max and cell indices (packs 0–2).
+	for _, pack := range []string{"0", "1", "2"} {
+		if v, ok := parseFloat(f["b"+pack+"max"]); ok {
+			e.cellVoltageMillivolts.WithLabelValues(pack, "max").Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"min"]); ok {
+			e.cellVoltageMillivolts.WithLabelValues(pack, "min").Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"maxn"]); ok {
+			e.cellVoltageIndex.WithLabelValues(pack, "max").Set(v)
+		}
+		if v, ok := parseFloat(f["b"+pack+"minn"]); ok {
+			e.cellVoltageIndex.WithLabelValues(pack, "min").Set(v)
+		}
+	}
+
+	// Per-solar-input voltage (inputs 1–2).
+	for _, input := range []string{"1", "2"} {
+		if v, ok := parseFloat(f["pv"+input+"v"]); ok {
+			e.solarInputVoltage.WithLabelValues(input).Set(v)
+		}
+	}
+
+	// Per-output-port voltage (outputs 1–2).
+	for _, output := range []string{"1", "2"} {
+		if v, ok := parseFloat(f["out"+output+"v"]); ok {
+			e.outputVoltage.WithLabelValues(output).Set(v)
+		}
+	}
+
+	// Wi-Fi/BT status.
+	if v, ok := parseFloat(f["wbs"]); ok {
+		e.wifiBTStatus.Set(v)
+	}
+
+	// Device self-reported timestamp: "2026-4-20 12:00:00"
+	if dateStr, ok := f["date"]; ok {
+		if ts, err := time.ParseInLocation("2006-1-2 15:04:05", dateStr, time.Local); err == nil {
+			e.cloudDeviceTimestamp.Set(float64(ts.Unix()))
+		} else {
+			slog.Debug("cloud emulator: could not parse date field", "date", dateStr, "err", err)
+		}
+	}
 }

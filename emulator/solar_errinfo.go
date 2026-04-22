@@ -1,9 +1,13 @@
 package emulator
 
 import (
+	"io"
+	"log/slog"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -147,4 +151,65 @@ func bodyToString(raw []byte) string {
 		buf[4+i*2+1] = hextable[b&0x0f]
 	}
 	return string(buf)
+}
+
+// handleSolarErrInfo handles POST /app/Solar/puterrinfo.php — a buffered
+// error/event log upload from the device. The real cloud always returns "_1"
+// regardless of body content. The body is read, logged at info level with a
+// safe best-effort parse (so operators can validate the schema hypothesis), and
+// then discarded. No per-event metrics are collected in this pass.
+func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+
+	var (
+		raw           []byte
+		bodyTruncated bool
+	)
+	if r.ContentLength != 0 {
+		lr := io.LimitReader(r.Body, maxBodyLog+1)
+		var err error
+		raw, err = io.ReadAll(lr)
+		if err == nil && len(raw) > maxBodyLog {
+			raw = raw[:maxBodyLog]
+			bodyTruncated = true
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+	}
+
+	parsed := parseSolarErrInfoBody(raw)
+
+	e.reportsTotal.WithLabelValues(endpointSolarErrInfo).Inc()
+	e.lastReportTimestamp.WithLabelValues(endpointSolarErrInfo).Set(float64(time.Now().Unix()))
+
+	attrs := []any{
+		"method", r.Method,
+		"path", r.URL.Path,
+		"remote_addr", r.RemoteAddr,
+		"user_agent", r.UserAgent(),
+		"content_type", r.Header.Get("Content-Type"),
+		"content_length", r.ContentLength,
+		"body_raw", bodyToString(raw),
+		"body_truncated", bodyTruncated,
+		"uid", parsed.UID,
+		"header", parsed.Header,
+		"events_count", len(parsed.Events),
+		"events_oldest_ts", parsed.OldestTS,
+		"events_newest_ts", parsed.NewestTS,
+		"distinct_codes", parsed.DistinctCodes,
+		"distinct_values", parsed.DistinctValues,
+	}
+	if len(parsed.ParseErrors) > 0 {
+		attrs = append(attrs, "parse_errors", parsed.ParseErrors)
+	}
+	slog.Info("cloud emulator: solar errinfo upload", attrs...)
+
+	writeKongHeaders(w, startedAt, true)
+	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Del("Content-Length")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "_1")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
