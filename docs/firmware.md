@@ -116,6 +116,7 @@ Reproduce with:
 ```bash
 uv run scripts/analyze_firmware.py firmware/B2500_All_HMJ.bin
 uv run scripts/decode_fw_blobs.py  firmware/B2500_All_HMJ.bin
+uv run scripts/decrypt_fw_blobs.py firmware/B2500_All_HMJ.bin
 ```
 
 ### Hardware target
@@ -179,32 +180,56 @@ first 16 decoded bytes**:
 c271391d 458ec38d 818fa825 0c74cdfe    (first AES block of both blobs)
 ```
 
-That is the fingerprint of **AES-ECB or AES-CBC with a fixed IV applied
-to two plaintexts whose first 16 bytes are identical** — consistent with
-two X.509 certificates that both begin `30 82 …` (ASN.1 `SEQUENCE`).
-Combined with the nearby AT-command strings:
+That is the fingerprint of **AES-ECB (or AES-CBC with a fixed IV)
+applied to two plaintexts whose first 16 bytes are identical**. Given
+the nearby AT-command strings (`AT+QSSLCERT="CA"/"User Cert"/"User Key"`) and the PEM headers inside, both colliding slots are indeed
+certificates whose plaintext starts with `-----BEGIN CERTIFICATE-----\n`
+— exactly 16 bytes that get mapped to the same ciphertext block under
+ECB.
 
-```
-AT+QSSLCERT="CA",2,%d
-AT+QSSLCERT="User Cert",2,%d
-AT+QSSLCERT="User Key",2,%d
-```
+### Decryption — the key is already known
 
-the mapping is:
+The same 16-byte literal the `setB2500Report` cloud endpoint uses —
+`hamedatahamedata`, reverse-engineered from `marstek-2.pcap` captures
+and implemented in `[emulator/report.go](../emulator/report.go)` as
+`DecryptReport` — also decrypts the three firmware blobs. Mode is
+**AES-128-ECB with PKCS#7 padding**. The ASCII literal `"hamedata"`
+appears 5× in the image near offset `0x28400`; the full 16-byte key is
+assembled at runtime by doubling it.
 
-
-| Offset    | Decoded size | Almost certainly                                      |
-| --------- | ------------ | ----------------------------------------------------- |
-| `0x26820` | 1 216 B      | Root **CA** cert (DER, AES-encrypted, base64-wrapped) |
-| `0x26E7C` | 1 712 B      | Client **User Cert** (device identity chain)          |
-| `0x2776C` | 1 248 B      | Client **User Key** (private key)                     |
+Running `[scripts/decrypt_fw_blobs.py](../scripts/decrypt_fw_blobs.py)`
+writes the three PEMs to `firmware/decrypted/` and yields:
 
 
-The decryption key is stored elsewhere in the image (most likely in the
-low-entropy data region at `0x7000`, or as an immediate in the function
-that calls the AES core near `0x2648x`). Recovering it would enable
-MITM'ing MQTT TLS without relying on the already-documented
-`AT+QSSLCFG="verify",0,0` downgrade.
+| Offset    | Plaintext size | What it actually is                                                     |
+| --------- | -------------- | ----------------------------------------------------------------------- |
+| `0x26820` | 1 208 B        | **Amazon Root CA 1** (public, `CN=Amazon Root CA 1`, serial `06…5BCA`)  |
+| `0x26E7C` | 1 706 B        | **RSA-2048 private key** (matches the cert at `0x2776C`)                |
+| `0x2776C` | 1 244 B        | **AWS IoT device certificate** (`CN=AWS IoT Certificate`, valid → 2049) |
+
+
+`openssl rsa -modulus` on the private key and on the cert's public key
+produce the same SHA-256 (`996f4439b57b176c…`), so it is a
+self-consistent mTLS identity. The cert subject carries no per-device
+fields, so **every B2500-D unit running firmware 108 ships with the
+same AWS IoT Core credential** — a single fleet-wide identity baked
+into the OTA image rather than a per-device one.
+
+The naive "CA → User Cert → User Key" mapping from offset order is
+wrong in the middle: the image stores CA, **key**, **cert**, not CA,
+cert, key. Matches the `AT+QSSLCERT` sequence in which the radio needs
+its CA first and expects the key-then-cert pair last.
+
+The backing AWS IoT endpoint hostname is **not** present as plaintext
+anywhere in the image (`rg` for `amazonaws.com`, `.iot.`, `-ats` all
+come back empty), so it is presumably returned by a hamedata.com
+bootstrap call and pushed into the Quectel radio via `AT+QMTCFG` /
+`AT+QMTOPEN` at runtime.
+
+One consequence worth flagging: the same 128-bit key protects both the
+in-transit `setB2500Report` telemetry **and** the at-rest AWS IoT
+credentials. Rotating either one requires rotating the other, which is
+presumably why they haven't.
 
 ### Architectural picture
 
@@ -259,7 +284,7 @@ They match the `ReportXXX` structs in `emulator/report.go`.
 Notable ones:
 
 - `**cd=221` full settings snapshot (~650 B)** at `0x027EB0` — includes
-HMJ-only fields `fk_chg_`*, `fk_dsg_*`, `ct_t`, `tc_dis`, `fktc`,
+HMJ-only fields `fk_chg_`*, `fk_dsg_`*, `ct_t`, `tc_dis`, `fktc`,
 `lmo/lmi/lmf`.
 - `**cd=222` CT state (~200 B)** at `0x028944`:
 `ct_t=%d,phase_t=%d,dchrg_t=%d,seq_s=%d,c0=%d,c1=%d,c2=%d,cp=%d,op=%d`.
