@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,81 @@ marstek_battery_pack_soc_percent{device_id="test-device",device_type="HMJ-2",pac
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_battery_pack_soc_percent"); err != nil {
 		t.Errorf("sparse pack SoC not emitted correctly: %v", err)
+	}
+}
+
+// TestMarstek6GoldenPayload replays a real cd=0 payload captured from
+// marstek-6.pcap and asserts the exporter surfaces the BMS-adjacent Phase 0
+// fields (pack SoC from pe/a1/a2, m-channels) plus the pre-existing metrics.
+//
+// Fixture origin: one of 91 unique device ctrl payloads in marstek-6.pcap.
+// The device is a single-pack B2500-D (HMJ-2); a1/a2 and m0..m3 all report 0
+// as expected on that hardware.
+func TestMarstek6GoldenPayload(t *testing.T) {
+	body, err := os.ReadFile("testdata/marstek6_cd0.txt")
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	payload := strings.TrimRight(string(body), "\n")
+
+	fixedNow := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	c, reg := newTestCollector(5*time.Minute, func() time.Time { return fixedNow })
+	c.Update(payload)
+	c.MarkUp()
+
+	// Phase 0 additions: per-pack SoC + m-channels from the real payload.
+	expected := `
+# HELP marstek_battery_pack_soc_percent Per-pack state of charge in percent. pack=0 is the aggregate pe field; pack=1 and pack=2 are the a1/a2 channels.
+# TYPE marstek_battery_pack_soc_percent gauge
+marstek_battery_pack_soc_percent{device_id="test-device",device_type="HMJ-2",pack="0"} 23
+marstek_battery_pack_soc_percent{device_id="test-device",device_type="HMJ-2",pack="1"} 0
+marstek_battery_pack_soc_percent{device_id="test-device",device_type="HMJ-2",pack="2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_battery_pack_soc_percent"); err != nil {
+		t.Errorf("battery_pack_soc_percent mismatch on golden payload: %v", err)
+	}
+
+	expected = `
+# HELP marstek_mqtt_m_channel Raw m0..m3 channels from the cd=0 MQTT telemetry. Semantics are partially decoded: m3 tracks the load watts (lv) in captured traffic; m0..m2 are unverified per-pack metrics. Use for anomaly detection until fully decoded.
+# TYPE marstek_mqtt_m_channel gauge
+marstek_mqtt_m_channel{channel="0",device_id="test-device",device_type="HMJ-2"} 0
+marstek_mqtt_m_channel{channel="1",device_id="test-device",device_type="HMJ-2"} 0
+marstek_mqtt_m_channel{channel="2",device_id="test-device",device_type="HMJ-2"} 0
+marstek_mqtt_m_channel{channel="3",device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_mqtt_m_channel"); err != nil {
+		t.Errorf("mqtt_m_channel mismatch on golden payload: %v", err)
+	}
+
+	// Pre-existing regressions: if any of these break we've broken the
+	// steady-state parser for the real device.
+	expected = `
+# HELP marstek_battery_soc_percent State of charge in percent
+# TYPE marstek_battery_soc_percent gauge
+marstek_battery_soc_percent{device_id="test-device",device_type="HMJ-2"} 23
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_battery_soc_percent"); err != nil {
+		t.Errorf("battery_soc_percent regression on golden payload: %v", err)
+	}
+
+	expected = `
+# HELP marstek_solar_input_watts Solar input power in watts
+# TYPE marstek_solar_input_watts gauge
+marstek_solar_input_watts{device_id="test-device",device_type="HMJ-2",input="1"} 53
+marstek_solar_input_watts{device_id="test-device",device_type="HMJ-2",input="2"} 25
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_solar_input_watts"); err != nil {
+		t.Errorf("solar_input_watts regression on golden payload: %v", err)
+	}
+
+	// tc_dis=00 parses as 0 → surplus_feed_in_enabled=1 (inverted flag).
+	expected = `
+# HELP marstek_surplus_feed_in_enabled 1 if surplus feed-in is enabled, 0 otherwise
+# TYPE marstek_surplus_feed_in_enabled gauge
+marstek_surplus_feed_in_enabled{device_id="test-device",device_type="HMJ-2"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_surplus_feed_in_enabled"); err != nil {
+		t.Errorf("surplus_feed_in_enabled regression on golden payload: %v", err)
 	}
 }
 
