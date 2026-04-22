@@ -59,8 +59,9 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_cloud_device_timestamp_seconds`               |                                                                                               | Device self-reported local time as a Unix timestamp. Use to detect clock drift.                                                         |
 | `marstek_wifi_bt_status`                               |                                                                                               | Raw `wbs` field from the cloud telemetry report, indicating Wi-Fi/Bluetooth connectivity state.                                         |
 | `marstek_cloud_battery_pack_soc_percent`               | `pack` (0, 1, 2)                                                                              | Per-pack state of charge from the `pe0`/`pe1`/`pe2` cloud-report fields. Distinct from the MQTT `marstek_battery_pack_soc_percent`: the HTTP path is authoritative when both are populated, but the MQTT series updates faster. |
-| `marstek_battery_pack_fault_flags`                     | `pack` (0, 1, 2)                                                                              | Per-pack fault-flag bitmap from `b0f`/`b1f`/`b2f`. Non-zero means the pack has at least one active fault condition (see event code 75 `fault_flags_bitmap`). |
-| `marstek_battery_pack_temperature_raw`                 |                                                                                               | Raw `tn` field from the cloud telemetry report. Scale unverified (likely deci-Celsius or a packed bitfield); do **not** divide by 10 without cross-checking against a physical thermometer. |
+| `marstek_battery_pack_charge_direction`                | `pack` (0, 1, 2)                                                                              | Per-pack charge direction from `b0f`/`b1f`/`b2f`: 0=idle, 1=discharging, 2=charging. |
+| `marstek_cloud_report_sequence`                        |                                                                                               | Report sequence number since device boot, from the `tn` field of the cloud telemetry report. Increments by 1 per 10-minute report. |
+| `marstek_cell_voltage_spread_millivolts`               | `pack` (0, 1, 2)                                                                              | Difference between max and min cell voltage per pack in millivolts (`b0max`−`b0min`). Indicates cell balancing state; large values during CV charge are normal. |
 
 
 `marstek_up` is strictly tied to MQTT. Cloud reachability is tracked independently via `marstek_cloud_last_report_timestamp_seconds`.
@@ -206,14 +207,14 @@ A single captured sample (firmware `HMJ-2 fcv=202310231502`) decrypts to **51 fi
 |---|---|
 | `b0max`, `b0min`, `b0maxn`, `b0minn` (also `b1*`/`b2*`) | Per-pack min/max cell voltage (mV) and cell index |
 | `pe0`, `pe1`, `pe2` | Per-pack state of charge (%). The MQTT `cd=0` path only carries the aggregate `pe` plus `a0`/`a1`/`a2` channels |
-| `b0f`, `b1f`, `b2f` | Per-pack fault-flag bitmap. Non-zero means an active fault; same byte as event code 75 (`fault_flags_bitmap`) in `emulator/solar_errinfo_codes.go` |
-| `tn` | Pack temperature — scale unverified (likely deci-Celsius or a packed bitfield) |
+| `b0f`, `b1f`, `b2f` | Per-pack charge direction: 0=idle, 1=discharging, 2=charging (confirmed via marstek-7.pcap full charge/discharge cycle) |
+| `tn` | Report sequence number since boot — increments by 1 per 10-minute report (confirmed via marstek-7.pcap: 53→103 over 51 reports) |
 | `pv1v`, `pv2v` | Per-solar-input voltage (mV) |
 | `out1v`, `out2v` | Per-output-port voltage (mV) |
 | `wbs` | Wi-Fi/Bluetooth status |
 | `date` | Device self-reported local time |
 
-The emulator decrypts every incoming report and exposes these as the `marstek_cell_voltage_millivolts`, `marstek_cloud_battery_pack_soc_percent`, `marstek_battery_pack_fault_flags`, `marstek_battery_pack_temperature_raw`, `marstek_solar_input_voltage_millivolts`, `marstek_output_voltage_millivolts`, `marstek_wifi_bt_status`, and `marstek_cloud_device_timestamp_seconds` metrics. Fields already exported via MQTT are not re-exported.
+The emulator decrypts every incoming report and exposes these as the `marstek_cell_voltage_millivolts`, `marstek_cell_voltage_spread_millivolts`, `marstek_cloud_battery_pack_soc_percent`, `marstek_battery_pack_charge_direction`, `marstek_cloud_report_sequence`, `marstek_solar_input_voltage_millivolts`, `marstek_output_voltage_millivolts`, `marstek_wifi_bt_status`, and `marstek_cloud_device_timestamp_seconds` metrics. Fields already exported via MQTT are not re-exported.
 
 If a future firmware version rotates the key, `marstek_cloud_report_decode_errors_total` will increment and a `WARN` log line will appear. The reproduction script `scripts/crack_report.py` can be run against new pcap captures to recover a new key:
 

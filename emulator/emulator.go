@@ -36,8 +36,9 @@ type Emulator struct {
 	cloudDeviceTimestamp   prometheus.Gauge
 	wifiBTStatus           prometheus.Gauge
 	cloudBatteryPackSoC    *prometheus.GaugeVec // pe0/pe1/pe2
-	batteryPackFaultFlags  *prometheus.GaugeVec // b0f/b1f/b2f
-	batteryPackTemperature prometheus.Gauge     // tn
+	batteryPackChargeDirection *prometheus.GaugeVec // b0f/b1f/b2f
+	cloudReportSequence       prometheus.Gauge     // tn
+	cellVoltageSpread         *prometheus.GaugeVec // b{n}max - b{n}min
 
 	// puterrinfo positional header — kept for backward compat and firmware-drift detection
 	solarErrInfoHeaderValue *prometheus.GaugeVec
@@ -77,7 +78,8 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		reportPayloadBytes, reportDecodeErrors, deviceInfo,
 		cellVoltageMillivolts, cellVoltageIndex, solarInputVoltage, solarInputPower,
 		outputVoltage, cloudDeviceTimestamp, wifiBTStatus,
-		cloudBatteryPackSoC, batteryPackFaultFlags, batteryPackTemperature,
+		cloudBatteryPackSoC, batteryPackChargeDirection, cloudReportSequence,
+		cellVoltageSpread,
 		solarErrInfoHeaderValue,
 		solarErrInfoReportType, solarErrInfoSwVersion,
 		solarErrInfoField2, solarErrInfoField3, solarErrInfoField4, solarErrInfoField5,
@@ -100,8 +102,9 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		cloudDeviceTimestamp:        cloudDeviceTimestamp,
 		wifiBTStatus:                wifiBTStatus,
 		cloudBatteryPackSoC:         cloudBatteryPackSoC,
-		batteryPackFaultFlags:       batteryPackFaultFlags,
-		batteryPackTemperature:      batteryPackTemperature,
+		batteryPackChargeDirection:  batteryPackChargeDirection,
+		cloudReportSequence:        cloudReportSequence,
+		cellVoltageSpread:          cellVoltageSpread,
 		solarErrInfoHeaderValue:     solarErrInfoHeaderValue,
 		solarErrInfoReportType:      solarErrInfoReportType,
 		solarErrInfoSwVersion:       solarErrInfoSwVersion,

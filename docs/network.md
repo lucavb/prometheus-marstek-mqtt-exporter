@@ -156,7 +156,7 @@ The colon-separated header has 7 fields (1 string + 6 integers):
 | 0        | `uid`           | Device UID (hex string, e.g. `3601115030374d33300f1365`)             |
 | 1        | `report_type`   | Battery slot: `0` = slot 0 (triple events), `1` = slot 1, `2` = slot 2 (quintuple events) |
 | 2        | `sw_version`    | Firmware version number (e.g. `110`)                                 |
-| 3        | `field2`        | SoC % or battery voltage field (TBC against a live Type 1/2 capture) |
+| 3        | `field2`        | SoC % at the time the event ring was flushed (confirmed via marstek-7.pcap: field2=100 matched soc=100% in surrounding cloud telemetry reports) |
 | 4        | `field3`        | Status flags byte at battery_state+0x4d / +0xde / +0x16f            |
 | 5        | `field4`        | Status flags byte at battery_state+0x4e / +0xdf / +0x170            |
 | 6        | `field5`        | Status flags byte at battery_state+0x4f / +0xe0 / +0x171            |
@@ -209,7 +209,7 @@ dropped silently. Overflow: FIFO — oldest evicted, newest appended.
 |  80  | `setreport_response_parsed`     | setreport HTTP response parsed via alternate JSON key branch; value = response flag byte |
 |  81  | `battery_pack_init_no_response` | BMS init probe (0x81 cmd) returned 0 or 0xFF; value = raw probe return |
 |  82  | `battery_pack_init_cell_fault`  | Init-time cell-voltage fault: one of 3 thresholds crossed (0x31/0x12/0x50); value = fault bitmask (bits 3/4/5) |
-|  84  | `heartbeat`                     | 60s timer or HTTP OK; value = 0 (timer) or 0x4FFFF                     |
+|  84  | `heartbeat`                     | 60s timer or HTTP response; value = 0 (timer), 327679/0x4FFFF (HTTP OK composite), or HTTP status code (e.g. 404) on non-OK response |
 |  85  | `mqtt_ext_subscribe_failed`     | Secondary MQTT client AT+QMTSUB rejected after 4 retries; value = broker subscribe-reject byte |
 |  86  | `tls_cert_inventory_missing`    | AT+QFLST did not list all 3 TLS files (User_Cert_1 / User_Key_1 / CA); triggers re-provisioning; value = inventory bitmap |
 |  87  | `tls_cert_slots_cleared`        | AT+QSSLCERT="CA",0 → "User_Cert",0 → "User_Key",0 all OK (modem ready to flash new certs); value = retry counter at state+0xb2a |
@@ -326,6 +326,37 @@ per-device cert, then the device reconnects with the per-device identity.
 Confirming this requires either a clean pcap of a freshly-provisioned device
 (the AWS IoT hostname is passed in as a TLS SNI and will be visible there) or
 dynamically intercepting `AT+QMTOPEN` arguments on the MCU↔radio UART.
+
+## Known firmware quirks
+
+### Bare GET with empty path
+
+Observed in marstek-7.pcap at t=4200s and t=4260s (60 seconds apart): the
+device sends an HTTP request with **no URI path**:
+
+```
+GET  HTTP/1.1
+Host: eu.hamedata.com
+Connection: keep-alive
+User-Agent: quectel-fc41d
+```
+
+Note the double space between `GET` and `HTTP/1.1` — the path is missing
+entirely. This is a race condition in the Quectel FC41D AT HTTP stack where
+`AT+QHTTPGET` fires before the URL is fully configured. The emulator's
+catch-all handler responds with 404. No action needed; the device retries
+with a correct request on the next reporting cycle.
+
+### `date` field frozen at noon
+
+The `date` field in every `setB2500Report` payload reports the same timestamp
+(e.g. `2026-4-22 12:00:00`) regardless of actual time of day. The device only
+calls `getDateInfo` at boot for time synchronisation. If the boot occurred
+before DNS was redirected to the emulator (or while the real cloud was
+unreachable), the device clock is stuck at the date of boot with a hardcoded
+noon time. This makes `marstek_cloud_device_timestamp_seconds` unreliable for
+precise clock-drift detection; it only confirms which **date** the device
+thinks it is.
 
 ## Summary
 

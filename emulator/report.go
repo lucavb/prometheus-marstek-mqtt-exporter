@@ -177,15 +177,23 @@ func (e *Emulator) updateReportMetrics(f map[string]string) {
 			e.cloudBatteryPackSoC.WithLabelValues(pack).Set(v)
 		}
 		if v, ok := parseFloat(f["b"+pack+"f"]); ok {
-			e.batteryPackFaultFlags.WithLabelValues(pack).Set(v)
+			e.batteryPackChargeDirection.WithLabelValues(pack).Set(v)
+		}
+
+		// Cell voltage spread: max − min per pack. Only set when both
+		// values are present and the pack reports non-zero voltages.
+		maxV, maxOk := parseFloat(f["b"+pack+"max"])
+		minV, minOk := parseFloat(f["b"+pack+"min"])
+		if maxOk && minOk && (maxV > 0 || minV > 0) {
+			e.cellVoltageSpread.WithLabelValues(pack).Set(maxV - minV)
 		}
 	}
 
-	// Pack temperature — raw value, scale unverified. Captures show 105 when
-	// warm / 17 when cold, suggesting deci-Celsius but we publish the raw
-	// field and let the user decide.
+	// Report sequence number — increments by 1 per 10-minute cloud report.
+	// Confirmed via marstek-7.pcap (53→103 over 51 consecutive reports).
+	// Previously misidentified as temperature.
 	if v, ok := parseFloat(f["tn"]); ok {
-		e.batteryPackTemperature.Set(v)
+		e.cloudReportSequence.Set(v)
 	}
 
 	// Per-solar-input voltage and power (inputs 1–2).
@@ -211,6 +219,10 @@ func (e *Emulator) updateReportMetrics(f map[string]string) {
 	}
 
 	// Device self-reported timestamp: "2026-4-20 12:00:00"
+	// Note: the device only calls getDateInfo at boot. If boot occurred
+	// before DNS was redirected to the emulator, the device clock may be
+	// stuck at a default value (observed as noon on the boot date in
+	// marstek-7.pcap — all 51 reports reported identical timestamps).
 	if dateStr, ok := f["date"]; ok {
 		if ts, err := time.ParseInLocation("2006-1-2 15:04:05", dateStr, time.Local); err == nil {
 			e.cloudDeviceTimestamp.Set(float64(ts.Unix()))

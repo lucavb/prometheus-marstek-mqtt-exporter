@@ -87,6 +87,54 @@ func TestDecryptReport_Golden(t *testing.T) {
 	}
 }
 
+// TestMarstek7GoldenPayload replays the first cloud telemetry report from
+// marstek-7.pcap and verifies the newly corrected field interpretations:
+// tn is a report sequence counter (not temperature), b0f is charge direction
+// (not fault flags), and the cell voltage spread is correctly derived.
+func TestMarstek7GoldenPayload(t *testing.T) {
+	ct, err := os.ReadFile("testdata/marstek7_report.bin")
+	if err != nil {
+		t.Fatalf("read marstek7 fixture: %v", err)
+	}
+	v := base64.URLEncoding.EncodeToString(ct)
+
+	plaintext, err := DecryptReport(v)
+	if err != nil {
+		t.Fatalf("DecryptReport: %v", err)
+	}
+
+	fields, err := ParseReport(plaintext)
+	if err != nil {
+		t.Fatalf("ParseReport: %v", err)
+	}
+
+	// Verify all 51 fields are present.
+	if got := len(fields); got != 51 {
+		t.Errorf("field count = %d, want 51", got)
+	}
+
+	// Check the fields whose semantics we corrected via marstek-7 analysis.
+	checks := map[string]string{
+		"tn":     "53",   // report sequence counter (was mistaken for temperature)
+		"b0f":    "2",    // charge direction: 2 = charging
+		"b0max":  "3334", // cell max voltage mV
+		"b0min":  "3332", // cell min voltage mV → spread = 2
+		"soc":    "29",
+		"pe0":    "29",
+		"bi":     "123",  // battery input watts (charging)
+		"bo":     "0",    // battery output watts (not discharging)
+		"pv1":    "370",
+		"pv2":    "39",
+		"b0maxn": "13",   // cell index with max voltage
+		"b0minn": "2",    // cell index with min voltage
+	}
+	for k, want := range checks {
+		if got := fields[k]; got != want {
+			t.Errorf("fields[%q] = %q, want %q", k, got, want)
+		}
+	}
+}
+
 // TestDecryptReport_BadBase64 ensures a malformed base64 string returns an
 // error and does not panic.
 func TestDecryptReport_BadBase64(t *testing.T) {

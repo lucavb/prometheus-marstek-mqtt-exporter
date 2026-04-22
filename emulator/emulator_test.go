@@ -269,8 +269,9 @@ func TestReportCloudMetrics(t *testing.T) {
 		"marstek_cloud_device_timestamp_seconds",
 		"marstek_wifi_bt_status",
 		"marstek_cloud_battery_pack_soc_percent",
-		"marstek_battery_pack_fault_flags",
-		"marstek_battery_pack_temperature_raw",
+		"marstek_battery_pack_charge_direction",
+		"marstek_cloud_report_sequence",
+		"marstek_cell_voltage_spread_millivolts",
 	} {
 		if c := testutil.CollectAndCount(reg, name); c == 0 {
 			t.Errorf("metric %q has no series after a valid report", name)
@@ -293,13 +294,15 @@ func TestReportCloudMetrics(t *testing.T) {
 		{"marstek_output_voltage_millivolts", map[string]string{"output": "2"}, 30000},
 		{"marstek_wifi_bt_status", nil, 3},
 		// Synthetic fixture plaintext: pe0=50, pe1=0, pe2=0; b0f=1, b1f=0, b2f=0; tn=100.
+		// b0max=3300, b0min=3290 → spread=10.
 		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "0"}, 50},
 		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "1"}, 0},
 		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "2"}, 0},
-		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "0"}, 1},
-		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "1"}, 0},
-		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "2"}, 0},
-		{"marstek_battery_pack_temperature_raw", nil, 100},
+		{"marstek_battery_pack_charge_direction", map[string]string{"pack": "0"}, 1},
+		{"marstek_battery_pack_charge_direction", map[string]string{"pack": "1"}, 0},
+		{"marstek_battery_pack_charge_direction", map[string]string{"pack": "2"}, 0},
+		{"marstek_cloud_report_sequence", nil, 100},
+		{"marstek_cell_voltage_spread_millivolts", map[string]string{"pack": "0"}, 10},
 	}
 	for _, tc := range metricChecks {
 		gathered, err := reg.Gather()
@@ -344,9 +347,9 @@ func TestReportCloudMetrics(t *testing.T) {
 // TestMarstek6ReportReplay replays a synthetic AES-encrypted report blob whose
 // structure and BMS-adjacent field values mirror a real setB2500Report payload
 // captured in marstek-6.pcap (devid zeroed to keep personal data out of the
-// repo). Asserts the Phase 0 additions — per-pack SoC, fault flags, and the
-// raw tn temperature — plus the pre-existing cloud-only gauges, so any silent
-// parsing regression is caught.
+// repo). Asserts per-pack SoC, charge direction, report sequence, cell voltage
+// spread, plus the pre-existing cloud-only gauges, so any silent parsing
+// regression is caught.
 func TestMarstek6ReportReplay(t *testing.T) {
 	em, reg := newTestEmulator(t, time.UTC)
 	h := em.Handler()
@@ -376,10 +379,11 @@ func TestMarstek6ReportReplay(t *testing.T) {
 		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "0"}, 23},
 		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "1"}, 0},
 		{"marstek_cloud_battery_pack_soc_percent", map[string]string{"pack": "2"}, 0},
-		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "0"}, 2},
-		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "1"}, 0},
-		{"marstek_battery_pack_fault_flags", map[string]string{"pack": "2"}, 0},
-		{"marstek_battery_pack_temperature_raw", nil, 17},
+		{"marstek_battery_pack_charge_direction", map[string]string{"pack": "0"}, 2},
+		{"marstek_battery_pack_charge_direction", map[string]string{"pack": "1"}, 0},
+		{"marstek_battery_pack_charge_direction", map[string]string{"pack": "2"}, 0},
+		{"marstek_cloud_report_sequence", nil, 17},
+		{"marstek_cell_voltage_spread_millivolts", map[string]string{"pack": "0"}, 2},
 		// Sanity: pre-existing cloud-only metrics must still populate from this payload.
 		{"marstek_cell_voltage_millivolts", map[string]string{"pack": "0", "bound": "max"}, 3309},
 		{"marstek_cell_voltage_millivolts", map[string]string{"pack": "0", "bound": "min"}, 3307},

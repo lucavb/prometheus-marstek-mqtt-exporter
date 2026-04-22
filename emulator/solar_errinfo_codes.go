@@ -104,7 +104,7 @@ var errInfoCodeDesc = map[int64]string{
 	80:  "setreport HTTP response JSON parsed via alternate key branch (setreport_response_handler); value = response flag byte",
 	81:  "Battery pack init probe returned 0 or 0xFF (no reply from BMS over the 0x81 cmd); value = raw probe return",
 	82:  "Battery pack init detected cell-voltage fault (one of three thresholds crossed during init: 0x31 / 0x12 / 0x50); value = fault bitmask byte (bits 3/4/5)",
-	84:  "Heartbeat: periodic 60s timer OR HTTP OK response; value = 0 (timer) or status composite",
+	84:  "Heartbeat: periodic 60s timer OR HTTP response; value = 0 (timer), 327679/0x4FFFF (HTTP OK composite), or HTTP status code (e.g. 404) on non-OK response",
 	85:  "Secondary MQTT client AT+QMTSUB rejected after 4 retries; value = broker subscribe-reject byte",
 	86:  "TLS cert inventory check failed: AT+QFLST did not list all three expected files (User_Cert_1 / User_Key_1 / CA); triggers re-provisioning via state 0x14; value = inventory bitmap",
 	87:  "TLS cert slots cleared: AT+QSSLCERT=\"CA\",0 → \"User_Cert\",0 → \"User_Key\",0 all OK (ready to flash new certs); value = retry counter at state+0xb2a",

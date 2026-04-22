@@ -366,8 +366,9 @@ follow-up.
 - Related metrics exposed during Phase 0 of this plan (see
 `README.md` §Metrics): `marstek_battery_pack_soc_percent`,
 `marstek_mqtt_m_channel`, `marstek_cloud_battery_pack_soc_percent`,
-`marstek_battery_pack_fault_flags`,
-`marstek_battery_pack_temperature_raw`.
+`marstek_battery_pack_charge_direction`,
+`marstek_cloud_report_sequence`,
+`marstek_cell_voltage_spread_millivolts`.
 - Probe script: `scripts/probe_cd.py` (dry-run first;
 `--i-know-what-im-doing` required for live transmission).
 

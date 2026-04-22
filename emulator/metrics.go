@@ -21,8 +21,9 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	cloudDeviceTimestamp prometheus.Gauge,
 	wifiBTStatus prometheus.Gauge,
 	cloudBatteryPackSoC *prometheus.GaugeVec,
-	batteryPackFaultFlags *prometheus.GaugeVec,
-	batteryPackTemperature prometheus.Gauge,
+	batteryPackChargeDirection *prometheus.GaugeVec,
+	cloudReportSequence prometheus.Gauge,
+	cellVoltageSpread *prometheus.GaugeVec,
 	solarErrInfoHeaderValue *prometheus.GaugeVec,
 	// Named puterrinfo metrics.
 	solarErrInfoReportType *prometheus.GaugeVec,
@@ -145,29 +146,37 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	}, []string{"pack"})
 	reg.MustRegister(cloudBatteryPackSoC)
 
-	// Per-pack fault-flag bitmap from the b0f/b1f/b2f cloud-report fields. The
-	// enqueue_event call site for code 75 (fault_flags_bitmap) in
-	// solar_errinfo_codes.go writes the same byte that appears here.
-	// Currently exposed as a raw number; a future phase can split it into
-	// named flag gauges once the individual bits are decoded.
-	batteryPackFaultFlags = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name:        "marstek_battery_pack_fault_flags",
-		Help:        "Per-pack fault-flag bitmap, from the b0f/b1f/b2f fields of the cloud telemetry report. Non-zero means the pack has at least one active fault condition; see event code 75 (fault_flags_bitmap) in emulator/solar_errinfo_codes.go.",
+	// Per-pack charge direction from the b0f/b1f/b2f cloud-report fields.
+	// Confirmed via marstek-7.pcap analysis (51 reports across a full
+	// charge/discharge cycle): 0 = idle, 1 = discharging, 2 = charging.
+	batteryPackChargeDirection = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_battery_pack_charge_direction",
+		Help:        "Per-pack charge direction from the b0f/b1f/b2f fields of the cloud telemetry report: 0=idle, 1=discharging, 2=charging.",
 		ConstLabels: constLabels,
 	}, []string{"pack"})
-	reg.MustRegister(batteryPackFaultFlags)
+	reg.MustRegister(batteryPackChargeDirection)
 
-	// Pack temperature field `tn` from the cloud telemetry report. Scale is
-	// currently unverified — observed values 105 (warm operating) and 17
-	// (cold) suggest either integer deci-degrees Celsius or a packed
-	// bitfield. Exposed as a raw gauge until corroborated against
-	// a thermometer; do NOT interpret as plain Celsius until verified.
-	batteryPackTemperature = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name:        "marstek_battery_pack_temperature_raw",
-		Help:        "Raw tn field from the cloud telemetry report. Scale is currently unverified (likely deci-degrees Celsius or a packed bitfield). Do not divide by 10 without cross-checking against a physical thermometer.",
+	// Report sequence number from the `tn` field of the cloud telemetry report.
+	// Confirmed via marstek-7.pcap: increments by exactly 1 per 10-minute
+	// report (observed 53→103 over 51 consecutive reports with zero variation).
+	// Resets to 0 on device reboot. Previously misidentified as temperature.
+	cloudReportSequence = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        "marstek_cloud_report_sequence",
+		Help:        "Report sequence number since device boot, from the tn field of the cloud telemetry report. Increments by 1 per 10-minute report.",
 		ConstLabels: constLabels,
 	})
-	reg.MustRegister(batteryPackTemperature)
+	reg.MustRegister(cloudReportSequence)
+
+	// Cell voltage spread (max − min) per pack. Indicates cell balancing
+	// state: large spread during CV charge (e.g. 110 mV), small spread at
+	// float (15 mV) or during discharge (3 mV). Useful for battery health
+	// monitoring and detecting weak cells.
+	cellVoltageSpread = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_cell_voltage_spread_millivolts",
+		Help:        "Difference between max and min cell voltage per pack in millivolts (b0max−b0min). Indicates cell balancing state; large values during CV charge are normal.",
+		ConstLabels: constLabels,
+	}, []string{"pack"})
+	reg.MustRegister(cellVoltageSpread)
 
 	// Positional header gauge — kept for backward compatibility and to surface
 	// unexpected field additions from future firmware versions automatically.
@@ -195,7 +204,7 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 
 	solarErrInfoField2 = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name:        "marstek_solar_errinfo_field2",
-		Help:        "puterrinfo header field 2 (header[2]); likely SoC % or a battery voltage field. Exact semantics TBC against a live capture.",
+		Help:        "puterrinfo header field 2 (header[2]): SoC % at the time the event ring was flushed (confirmed via marstek-7.pcap cross-reference with cloud telemetry).",
 		ConstLabels: constLabels,
 	}, []string{"uid", "battery"})
 	reg.MustRegister(solarErrInfoField2)

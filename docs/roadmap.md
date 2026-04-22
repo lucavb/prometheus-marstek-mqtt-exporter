@@ -2,8 +2,29 @@
 
 Things we have **not** figured out yet about the Marstek B2500 but could,
 given the assets already in this repo (decompiled firmware in Ghidra, the
-`MARSTEK_1.6.61_APKPure.xapk`, six `marstek*.pcap` captures, decrypted cert/key
+`MARSTEK_1.6.61_APKPure.xapk`, seven `marstek*.pcap` captures, decrypted cert/key
 blobs under `firmware/decrypted/`, and a working emulator + exporter).
+
+### Recent findings from marstek-7.pcap (2026-04-22)
+
+Analysis of the 8.3-hour capture (51 decrypted cloud reports, 42 puterrinfo
+events) yielded:
+
+- **`tn` is a report sequence counter**, not temperature — increments by
+  exactly 1 per report (53→103). Metric renamed to `marstek_cloud_report_sequence`.
+- **`b0f` is charge direction**: 0=idle, 1=discharging, 2=charging — confirmed
+  across a full charge/discharge cycle. Metric renamed to
+  `marstek_battery_pack_charge_direction`.
+- **New metric `marstek_cell_voltage_spread_millivolts`** — derived from
+  b0max−b0min, shows cell balancing state (110 mV during CV charge, 3 mV
+  during discharge).
+- **puterrinfo field2 confirmed as SoC %** — header field2=100 matched
+  soc=100% in surrounding cloud telemetry.
+- **Heartbeat value=404 observed** — HTTP status codes are a third value class
+  alongside 0 (timer) and 0x4FFFF (HTTP OK composite).
+- **Bare-GET firmware bug** — device occasionally sends `GET  HTTP/1.1` (empty
+  path) due to a Quectel FC41D AT HTTP stack race condition.
+- **`date` field frozen at noon** — device only time-syncs at boot.
 
 Grouped by theme and rough payoff. Items marked with `★` are the highest-value
 next steps.
@@ -151,5 +172,5 @@ In order of bang-for-buck:
 
 ---
 
-_Last updated: 2026-04-22. See [`firmware.md`](firmware.md) for the state of
-the Ghidra analysis that underpins most of the above._
+_Last updated: 2026-04-22 (marstek-7.pcap analysis). See [`firmware.md`](firmware.md)
+for the state of the Ghidra analysis that underpins most of the above._
