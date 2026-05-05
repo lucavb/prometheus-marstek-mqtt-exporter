@@ -4,7 +4,7 @@ Prometheus exporter for the Marstek B2500-D home battery, using MQTT.
 
 Connects to a local MQTT broker, periodically polls the battery by publishing `cd=1` to its command topic, parses the status response, and exposes the data as Prometheus metrics on an HTTP `/metrics` endpoint.
 
-No BLE, no Marstek cloud — purely MQTT.
+By default this is MQTT-only: no BLE and no Marstek cloud. Optional recovery can use the ESP32 BLE bridge in `esp32/` to check battery connectivity and reprovision Wi-Fi when the battery drops off the network.
 
 ## Metrics
 
@@ -37,6 +37,21 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_mqtt_m_channel`                | `channel` (0–3)     | Raw `m0`..`m3` channels from cd=0. Semantics partially decoded (m3 ≈ load watts); keep for anomaly detection |
 | `marstek_scrapes_total`                 |                     | Total number of cd=1 polls sent                           |
 | `marstek_scrape_errors_total`           |                     | Polls that received no response within the timeout        |
+
+
+### ESP32 recovery metrics (only present when `MARSTEK_ESP32_BASE_URL` is set)
+
+| Metric                                                     | Labels | Description                                                                      |
+| ---------------------------------------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `marstek_esp32_battery_ble_connected`                      |        | 1 if the ESP32 bridge is connected to the battery over BLE, 0 otherwise          |
+| `marstek_esp32_battery_wifi_connected`                     |        | 1 if the battery reports WiFi connected through the ESP32 bridge, 0 otherwise    |
+| `marstek_esp32_battery_mqtt_connected`                     |        | 1 if the battery reports MQTT connected through the ESP32 bridge, 0 otherwise    |
+| `marstek_esp32_last_status_check_timestamp_seconds`        |        | Unix timestamp of the last successful ESP32 bridge status check                  |
+| `marstek_esp32_status_check_errors_total`                  |        | Number of ESP32 bridge status checks that failed                                 |
+| `marstek_esp32_recovery_attempts_total`                    |        | Total number of ESP32 bridge recovery attempts started                           |
+| `marstek_esp32_recovery_failures_total`                    |        | Total number of ESP32 bridge recovery attempts that failed                       |
+| `marstek_esp32_recovery_manual_intervention_required`      |        | 1 if automatic ESP32 recovery is exhausted and human intervention is required    |
+| `marstek_esp32_last_recovery_timestamp_seconds`            |        | Unix timestamp of the last successful ESP32 bridge recovery                      |
 
 
 ### Cloud emulator metrics (only present when `MARSTEK_EMULATOR_LISTEN_ADDR` is set)
@@ -111,6 +126,12 @@ Configuration is loaded in order of precedence: **defaults → environment varia
 | `MARSTEK_LOG_LEVEL`            | `--log-level`            | `info`       | Log level: `debug`, `info`, `warn`, `error`                                         |
 | `MARSTEK_LOG_FORMAT`           | `--log-format`           | `text`       | Log format: `text` or `json` (Docker image defaults to `json`)                      |
 | `MARSTEK_LOG_SOURCE`           | `--log-source`           | `false`      | Add source file/line to log records                                                 |
+| `MARSTEK_ESP32_BASE_URL`       | `--esp32-base-url`       | `""`         | Base URL for the optional ESP32 BLE bridge; empty = disabled                        |
+| `MARSTEK_ESP32_CHECK_INTERVAL_SECONDS` | `--esp32-check-interval-seconds` | `300` | How often to check ESP32 `/api/status`, in seconds                                  |
+| `MARSTEK_ESP32_RECOVERY_MISSED_POLLS` | `--esp32-recovery-missed-polls` | `3` | Consecutive missed MQTT polls before an early ESP32 status check                    |
+| `MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS` | `--esp32-max-recovery-attempts` | `3` | Full Wi-Fi reprovision attempts per continuous outage before human intervention     |
+| `MARSTEK_BATTERY_WIFI_SSID`    | `--battery-wifi-ssid`    | `""`         | Battery WiFi SSID to provision through the ESP32 bridge; required when enabled      |
+| `MARSTEK_BATTERY_WIFI_PASSWORD` | `--battery-wifi-password` | `""`        | Battery WiFi password to provision through the ESP32 bridge; required when enabled  |
 | `MARSTEK_EMULATOR_LISTEN_ADDR` | `--emulator-listen-addr` | `""`         | Listen address for the cloud emulator; **empty = disabled**                         |
 | `MARSTEK_EMULATOR_TZ`          | `--emulator-tz`          | `""`         | Timezone for the time-sync response (e.g. `Europe/Berlin`); empty = system timezone |
 
@@ -149,6 +170,17 @@ scrape_configs:
 ```bash
 ./marstek-exporter --mqtt-host <your-mqtt-broker-host> --device-id <your-device-id>
 ```
+
+## Optional ESP32 recovery
+
+The `esp32/` side deployment runs a small MicroPython HTTP bridge that talks BLE to the battery. When `MARSTEK_ESP32_BASE_URL` is set, the exporter uses that bridge to observe connectivity and push Wi-Fi settings while the exporter keeps the recovery policy and MQTT liveness logic.
+
+The exporter checks `GET /api/status` every `MARSTEK_ESP32_CHECK_INTERVAL_SECONDS` seconds, defaulting to 300 seconds. It also checks sooner after `MARSTEK_ESP32_RECOVERY_MISSED_POLLS` consecutive MQTT polls receive no battery response, but only after the exporter has already seen at least one successful MQTT response from the battery. If the ESP32 reports `wifi_connected=false`, the exporter runs this sequence:
+
+1. `POST /api/wifi` with `MARSTEK_BATTERY_WIFI_SSID` and `MARSTEK_BATTERY_WIFI_PASSWORD`
+2. Poll `/api/status` until `wifi_connected=true`
+
+Only one recovery can run at a time. A continuous outage gets at most `MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS` full recovery attempts, defaulting to 3; after that the exporter logs that human intervention is required. A later healthy ESP32 status resets the attempt counter. If the bridge reports `mqtt_connected=false` while Wi-Fi is still connected, the exporter records the status but does not try to reconfigure MQTT automatically.
 
 ## Cloud emulator (optional)
 

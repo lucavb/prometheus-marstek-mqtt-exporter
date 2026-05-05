@@ -12,10 +12,28 @@ import (
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/collector"
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/config"
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/emulator"
+	"github.com/lucavb/prometheus-marstek-mqtt-exporter/esp32bridge"
 	mqttclient "github.com/lucavb/prometheus-marstek-mqtt-exporter/mqtt"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+type pollResult int
+
+const (
+	pollResponded pollResult = iota
+	pollPublishFailed
+	pollTimedOut
+)
+
+type poller interface {
+	Poll() error
+}
+
+type recoverySupervisor interface {
+	EnableRecovery()
+	TriggerCheck()
+}
 
 func main() {
 	cfg := config.Load()
@@ -51,30 +69,24 @@ func main() {
 		return
 	}
 
-	go func() {
-		// Drain any stale signal before the first poll.
-		select {
-		case <-responseCh:
-		default:
-		}
+	var supervisor *esp32bridge.Supervisor
+	if cfg.ESP32BaseURL != "" {
+		bridge := esp32bridge.New(cfg.ESP32BaseURL)
+		metrics := esp32bridge.NewMetrics(reg, cfg.DeviceType, cfg.DeviceID)
+		supervisor = esp32bridge.NewSupervisor(bridge, esp32bridge.SupervisorConfig{
+			CheckInterval:       cfg.ESP32CheckInterval,
+			MaxRecoveryAttempts: cfg.ESP32MaxRecoveryAttempts,
+			WiFi: esp32bridge.WiFiConfig{
+				SSID:     cfg.BatteryWiFiSSID,
+				Password: cfg.BatteryWiFiPassword,
+			},
+			Metrics: metrics,
+		})
+		go supervisor.Run(ctx)
+		slog.Info("ESP32 recovery supervisor started", "base_url", cfg.ESP32BaseURL, "check_interval", cfg.ESP32CheckInterval.String())
+	}
 
-		if err := runPoll(ctx, client, coll, cfg.ResponseTimeout, responseCh); err != nil {
-			return
-		}
-
-		ticker := time.NewTicker(cfg.PollInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := runPoll(ctx, client, coll, cfg.ResponseTimeout, responseCh); err != nil {
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	go runPollLoop(ctx, client, coll, cfg.PollInterval, cfg.ResponseTimeout, cfg.ESP32RecoveryMissedPolls, supervisor, responseCh)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
@@ -135,9 +147,66 @@ func main() {
 	}
 }
 
+func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, interval, timeout time.Duration, recoveryMissedPolls int, supervisor recoverySupervisor, responseCh <-chan struct{}) {
+	// Drain any stale signal before the first poll.
+	select {
+	case <-responseCh:
+	default:
+	}
+
+	missedPolls := 0
+	seenSuccessfulResponse := false
+	handleResult := func(result pollResult) {
+		if result == pollResponded {
+			seenSuccessfulResponse = true
+			if supervisor != nil {
+				supervisor.EnableRecovery()
+			}
+		}
+		if supervisor != nil && seenSuccessfulResponse && updateMissedPolls(&missedPolls, result, recoveryMissedPolls) {
+			slog.Warn("triggering early ESP32 status check after missed MQTT polls", "missed_polls", recoveryMissedPolls)
+			supervisor.TriggerCheck()
+		}
+	}
+
+	result, err := runPoll(ctx, client, coll, timeout, responseCh)
+	if err != nil {
+		return
+	}
+	handleResult(result)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			result, err := runPoll(ctx, client, coll, timeout, responseCh)
+			if err != nil {
+				return
+			}
+			handleResult(result)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func updateMissedPolls(missedPolls *int, result pollResult, threshold int) bool {
+	if result == pollResponded {
+		*missedPolls = 0
+		return false
+	}
+	*missedPolls++
+	if *missedPolls < threshold {
+		return false
+	}
+	*missedPolls = 0
+	return true
+}
+
 // runPoll sends one cd=1 poll and waits for a response or timeout.
 // Returns a non-nil error only when ctx is cancelled, which signals the caller to stop.
-func runPoll(ctx context.Context, client *mqttclient.Client, coll *collector.Collector, timeout time.Duration, responseCh <-chan struct{}) error {
+func runPoll(ctx context.Context, client poller, coll *collector.Collector, timeout time.Duration, responseCh <-chan struct{}) (pollResult, error) {
 	// Drain any stale response from the previous round.
 	select {
 	case <-responseCh:
@@ -149,18 +218,21 @@ func runPoll(ctx context.Context, client *mqttclient.Client, coll *collector.Col
 		slog.Warn("poll publish failed", "error", err)
 		coll.IncScrapeError()
 		coll.MarkDown()
-		return nil
+		return pollPublishFailed, nil
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-responseCh:
 		slog.Debug("poll response received")
-	case <-time.After(timeout):
+		return pollResponded, nil
+	case <-timer.C:
 		slog.Warn("poll timed out waiting for device response", "timeout", timeout)
 		coll.IncScrapeError()
 		coll.MarkDown()
+		return pollTimedOut, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return pollTimedOut, ctx.Err()
 	}
-	return nil
 }
