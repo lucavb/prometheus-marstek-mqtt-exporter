@@ -3,3 +3,13 @@
 *.out
 .idea/
 .vscode/
+
+# ESP32 bridge — secrets and downloaded deps
+esp32/config.json
+esp32/microdot.py
+esp32/aioble/
+
+# APK analysis artifacts
+MARSTEK_*.xapk
+apk/
+firmware/*.bin
