@@ -19,8 +19,9 @@ type cachedMetric struct {
 
 // Collector implements prometheus.Collector. It caches the last device payload
 // and emits gauge metrics only while the cache is fresh (age <= ttl). The meta
-// metrics (up, last_update_timestamp_seconds) and the poll counters are always
-// emitted regardless of freshness.
+// metrics (up, last_update_timestamp_seconds, last_payload_timestamp_seconds,
+// payload_fresh) and the poll counters are always emitted regardless of
+// freshness.
 //
 // This follows the Prometheus "Writing Exporters" guidance:
 //   - Use MustNewConstMetric in Collect() so stale label values are not exported.
@@ -33,9 +34,11 @@ type Collector struct {
 	// Descriptors owned by this collector (sent in Describe).
 	// Counter descs are NOT listed here — those belong to the separately
 	// registered prometheus.Counter instances below.
-	upDesc         *prometheus.Desc
-	lastUpdateDesc *prometheus.Desc
-	allGaugeDescs  []*prometheus.Desc
+	upDesc           *prometheus.Desc
+	lastUpdateDesc   *prometheus.Desc
+	lastPayloadDesc  *prometheus.Desc
+	payloadFreshDesc *prometheus.Desc
+	allGaugeDescs    []*prometheus.Desc
 
 	// Lookup map used inside Update() to resolve desc by metric name.
 	// Key is the metric name suffix (e.g. "battery_soc_percent").
@@ -43,15 +46,17 @@ type Collector struct {
 
 	// Always-live state — emitted on every Collect regardless of freshness.
 	up              float64
-	lastSuccessUnix float64
+	lastPayloadUnix float64
 
 	// Device value cache — rebuilt wholesale on every Update().
 	cached       []cachedMetric
 	lastUpdateAt time.Time
 
 	// Direct-instrumentation counters (separately registered; always accumulate).
-	scrapesTotal      prometheus.Counter
-	scrapeErrorsTotal prometheus.Counter
+	scrapesTotal           prometheus.Counter
+	scrapeErrorsTotal      prometheus.Counter
+	pollTimeoutsTotal      prometheus.Counter
+	pollPublishErrorsTotal prometheus.Counter
 }
 
 func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Duration) *Collector {
@@ -69,8 +74,10 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 		)
 	}
 
-	upDesc := newDesc("up", "1 if the last poll received a response, 0 otherwise")
-	lastUpdateDesc := newDesc("last_update_timestamp_seconds", "Unix timestamp of the last successful device update")
+	upDesc := newDesc("up", "1 if the last poll received a parseable device payload, 0 otherwise")
+	lastUpdateDesc := newDesc("last_update_timestamp_seconds", "Unix timestamp of the last successfully parsed device payload")
+	lastPayloadDesc := newDesc("last_payload_timestamp_seconds", "Unix timestamp of the last successfully parsed device payload")
+	payloadFreshDesc := newDesc("payload_fresh", "1 if the last successfully parsed device payload is still within metric_ttl, 0 otherwise")
 
 	type namedDesc struct {
 		name string
@@ -121,23 +128,37 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 	})
 	scrapeErrorsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name:        prometheus.BuildFQName(namespace, "", "scrape_errors_total"),
-		Help:        "Number of polls that received no response within the timeout",
+		Help:        "Total number of cd=1 polls that failed, including publish failures and response timeouts",
+		ConstLabels: constLabels,
+	})
+	pollTimeoutsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        prometheus.BuildFQName(namespace, "", "poll_timeouts_total"),
+		Help:        "Number of cd=1 polls that timed out waiting for a parseable device payload",
+		ConstLabels: constLabels,
+	})
+	pollPublishErrorsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        prometheus.BuildFQName(namespace, "", "poll_publish_errors_total"),
+		Help:        "Number of cd=1 polls that failed before publish completed",
 		ConstLabels: constLabels,
 	})
 
 	c := &Collector{
-		ttl:               ttl,
-		nowFn:             time.Now,
-		upDesc:            upDesc,
-		lastUpdateDesc:    lastUpdateDesc,
-		allGaugeDescs:     gaugeDescs,
-		gaugeDescMap:      gaugeDescMap,
-		scrapesTotal:      scrapesTotal,
-		scrapeErrorsTotal: scrapeErrorsTotal,
+		ttl:                    ttl,
+		nowFn:                  time.Now,
+		upDesc:                 upDesc,
+		lastUpdateDesc:         lastUpdateDesc,
+		lastPayloadDesc:        lastPayloadDesc,
+		payloadFreshDesc:       payloadFreshDesc,
+		allGaugeDescs:          gaugeDescs,
+		gaugeDescMap:           gaugeDescMap,
+		scrapesTotal:           scrapesTotal,
+		scrapeErrorsTotal:      scrapeErrorsTotal,
+		pollTimeoutsTotal:      pollTimeoutsTotal,
+		pollPublishErrorsTotal: pollPublishErrorsTotal,
 	}
 
-	// Register the custom collector and the two direct-instrumentation counters.
-	reg.MustRegister(c, scrapesTotal, scrapeErrorsTotal)
+	// Register the custom collector and the direct-instrumentation counters.
+	reg.MustRegister(c, scrapesTotal, scrapeErrorsTotal, pollTimeoutsTotal, pollPublishErrorsTotal)
 	return c
 }
 
@@ -148,6 +169,8 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.upDesc
 	ch <- c.lastUpdateDesc
+	ch <- c.lastPayloadDesc
+	ch <- c.payloadFreshDesc
 	for _, d := range c.allGaugeDescs {
 		ch <- d
 	}
@@ -162,7 +185,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	// Always emit meta metrics regardless of device state.
 	ch <- prometheus.MustNewConstMetric(c.upDesc, prometheus.GaugeValue, c.up)
-	ch <- prometheus.MustNewConstMetric(c.lastUpdateDesc, prometheus.GaugeValue, c.lastSuccessUnix)
+	ch <- prometheus.MustNewConstMetric(c.lastUpdateDesc, prometheus.GaugeValue, c.lastPayloadUnix)
+	ch <- prometheus.MustNewConstMetric(c.lastPayloadDesc, prometheus.GaugeValue, c.lastPayloadUnix)
+	ch <- prometheus.MustNewConstMetric(c.payloadFreshDesc, prometheus.GaugeValue, boolToFloat(fresh))
 
 	if !fresh {
 		return
@@ -172,12 +197,13 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-// Update parses a device payload and rebuilds the metric cache. Safe for concurrent use.
-func (c *Collector) Update(payload string) {
+// Update parses a device payload and rebuilds the metric cache. It returns true
+// when the payload was parseable and refreshed the cache.
+func (c *Collector) Update(payload string) bool {
 	m := Parse(payload)
 	if len(m) == 0 {
 		slog.Warn("received empty or unparseable payload", "payload", payload)
-		return
+		return false
 	}
 
 	var metrics []cachedMetric
@@ -270,16 +296,17 @@ func (c *Collector) Update(payload string) {
 	c.mu.Lock()
 	c.cached = metrics
 	c.lastUpdateAt = c.nowFn()
+	c.lastPayloadUnix = float64(c.lastUpdateAt.Unix())
 	c.mu.Unlock()
 
 	slog.Debug("metrics updated from payload", "fields_parsed", len(m))
+	return true
 }
 
-// MarkUp records a successful device response.
+// MarkUp records a successful poll that returned a parseable payload.
 func (c *Collector) MarkUp() {
 	c.mu.Lock()
 	c.up = 1
-	c.lastSuccessUnix = float64(c.nowFn().Unix())
 	c.mu.Unlock()
 }
 
@@ -294,6 +321,19 @@ func (c *Collector) IncScrape() {
 	c.scrapesTotal.Inc()
 }
 
-func (c *Collector) IncScrapeError() {
+func (c *Collector) IncPollTimeout() {
 	c.scrapeErrorsTotal.Inc()
+	c.pollTimeoutsTotal.Inc()
+}
+
+func (c *Collector) IncPollPublishError() {
+	c.scrapeErrorsTotal.Inc()
+	c.pollPublishErrorsTotal.Inc()
+}
+
+func boolToFloat(v bool) float64 {
+	if v {
+		return 1
+	}
+	return 0
 }

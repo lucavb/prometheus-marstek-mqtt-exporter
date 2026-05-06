@@ -132,7 +132,7 @@ func (s *Supervisor) Check(ctx context.Context) error {
 
 	attempt := s.currentAttempts()
 	slog.Warn("starting ESP32 battery recovery", "attempt", attempt, "max_attempts", s.cfg.MaxRecoveryAttempts, "wifi_connected", status.WiFiConnected, "mqtt_connected", status.MQTTConnected)
-	if err := s.recover(ctx); err != nil {
+	if err := s.recoverWiFi(ctx); err != nil {
 		s.cfg.Metrics.IncRecoveryFailure()
 		slog.Warn("ESP32 battery recovery failed", "attempt", attempt, "max_attempts", s.cfg.MaxRecoveryAttempts, "error", err)
 		if attempt >= s.cfg.MaxRecoveryAttempts {
@@ -148,7 +148,7 @@ func (s *Supervisor) Check(ctx context.Context) error {
 	return nil
 }
 
-func (s *Supervisor) recover(ctx context.Context) error {
+func (s *Supervisor) recoverWiFi(ctx context.Context) error {
 	if err := s.bridge.ConfigureWiFi(ctx, s.cfg.WiFi); err != nil {
 		return fmt.Errorf("configure wifi: %w", err)
 	}

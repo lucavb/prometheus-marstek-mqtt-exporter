@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/lucavb/prometheus-marstek-mqtt-exporter/collector"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type fakePoller struct {
@@ -52,6 +54,12 @@ func testCollector(t *testing.T) *collector.Collector {
 	return collector.New(prometheus.NewRegistry(), "HMJ-2", "test-device", time.Minute)
 }
 
+func newCollectorWithRegistry(t *testing.T) (*collector.Collector, *prometheus.Registry) {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	return collector.New(reg, "HMJ-2", "test-device", time.Minute), reg
+}
+
 func TestRunPollResponded(t *testing.T) {
 	responseCh := make(chan struct{}, 1)
 	poller := fakePoller{onPoll: func() {
@@ -84,6 +92,50 @@ func TestRunPollTimedOut(t *testing.T) {
 	}
 	if result != pollTimedOut {
 		t.Fatalf("result = %v, want pollTimedOut", result)
+	}
+}
+
+func TestHandleDevicePayloadSignalsParseableResponse(t *testing.T) {
+	coll, reg := newCollectorWithRegistry(t)
+	responseCh := make(chan struct{}, 1)
+
+	handleDevicePayload(coll, responseCh, "pe=75")
+
+	select {
+	case <-responseCh:
+	default:
+		t.Fatal("expected parseable payload to signal a response")
+	}
+
+	expected := `
+# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# TYPE marstek_up gauge
+marstek_up{device_id="test-device",device_type="HMJ-2"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_up"); err != nil {
+		t.Fatalf("expected parseable payload to mark collector up: %v", err)
+	}
+}
+
+func TestHandleDevicePayloadIgnoresUnparseableResponse(t *testing.T) {
+	coll, reg := newCollectorWithRegistry(t)
+	responseCh := make(chan struct{}, 1)
+
+	handleDevicePayload(coll, responseCh, "not-a-payload")
+
+	select {
+	case <-responseCh:
+		t.Fatal("did not expect unparseable payload to signal a response")
+	default:
+	}
+
+	expected := `
+# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# TYPE marstek_up gauge
+marstek_up{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_up"); err != nil {
+		t.Fatalf("unparseable payload should not mark collector up: %v", err)
 	}
 }
 

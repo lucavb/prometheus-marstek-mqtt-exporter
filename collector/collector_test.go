@@ -83,12 +83,21 @@ func TestStaleMetricsOmitted(t *testing.T) {
 
 	// Meta metrics must still be present.
 	expected := `
-# HELP marstek_up 1 if the last poll received a response, 0 otherwise
+# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_up"); err != nil {
 		t.Errorf("marstek_up should still be emitted after TTL expiry: %v", err)
+	}
+
+	expected = `
+# HELP marstek_payload_fresh 1 if the last successfully parsed device payload is still within metric_ttl, 0 otherwise
+# TYPE marstek_payload_fresh gauge
+marstek_payload_fresh{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_payload_fresh"); err != nil {
+		t.Errorf("marstek_payload_fresh should be 0 after TTL expiry: %v", err)
 	}
 
 	found := false
@@ -103,6 +112,44 @@ marstek_up{device_id="test-device",device_type="HMJ-2"} 1
 	}
 }
 
+func TestFreshPayloadCanCoexistWithDownPollHealth(t *testing.T) {
+	fixedNow := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	c, reg := newTestCollector(5*time.Minute, func() time.Time { return fixedNow })
+
+	if !c.Update(samplePayload) {
+		t.Fatal("expected sample payload to parse")
+	}
+	c.MarkUp()
+	c.MarkDown()
+
+	expected := `
+# HELP marstek_battery_soc_percent State of charge in percent
+# TYPE marstek_battery_soc_percent gauge
+marstek_battery_soc_percent{device_id="test-device",device_type="HMJ-2"} 75
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_battery_soc_percent"); err != nil {
+		t.Errorf("fresh payload should still be exported while poll health is down: %v", err)
+	}
+
+	expected = `
+# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# TYPE marstek_up gauge
+marstek_up{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_up"); err != nil {
+		t.Errorf("marstek_up should reflect the latest poll health: %v", err)
+	}
+
+	expected = `
+# HELP marstek_payload_fresh 1 if the last successfully parsed device payload is still within metric_ttl, 0 otherwise
+# TYPE marstek_payload_fresh gauge
+marstek_payload_fresh{device_id="test-device",device_type="HMJ-2"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_payload_fresh"); err != nil {
+		t.Errorf("marstek_payload_fresh should remain 1 while the cache is within ttl: %v", err)
+	}
+}
+
 func TestMetaMetricsAlwaysPresent(t *testing.T) {
 	fixedNow := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	_, reg := newTestCollector(5*time.Minute, func() time.Time { return fixedNow })
@@ -110,7 +157,7 @@ func TestMetaMetricsAlwaysPresent(t *testing.T) {
 	// No Update or MarkUp called — cold start.
 
 	expected := `
-# HELP marstek_up 1 if the last poll received a response, 0 otherwise
+# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 0
 `
@@ -128,12 +175,39 @@ marstek_scrapes_total{device_id="test-device",device_type="HMJ-2"} 0
 	}
 
 	expected = `
-# HELP marstek_scrape_errors_total Number of polls that received no response within the timeout
+# HELP marstek_scrape_errors_total Total number of cd=1 polls that failed, including publish failures and response timeouts
 # TYPE marstek_scrape_errors_total counter
 marstek_scrape_errors_total{device_id="test-device",device_type="HMJ-2"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_scrape_errors_total"); err != nil {
 		t.Errorf("marstek_scrape_errors_total should be present at cold start: %v", err)
+	}
+
+	expected = `
+# HELP marstek_poll_timeouts_total Number of cd=1 polls that timed out waiting for a parseable device payload
+# TYPE marstek_poll_timeouts_total counter
+marstek_poll_timeouts_total{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_poll_timeouts_total"); err != nil {
+		t.Errorf("marstek_poll_timeouts_total should be present at cold start: %v", err)
+	}
+
+	expected = `
+# HELP marstek_poll_publish_errors_total Number of cd=1 polls that failed before publish completed
+# TYPE marstek_poll_publish_errors_total counter
+marstek_poll_publish_errors_total{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_poll_publish_errors_total"); err != nil {
+		t.Errorf("marstek_poll_publish_errors_total should be present at cold start: %v", err)
+	}
+
+	expected = `
+# HELP marstek_payload_fresh 1 if the last successfully parsed device payload is still within metric_ttl, 0 otherwise
+# TYPE marstek_payload_fresh gauge
+marstek_payload_fresh{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_payload_fresh"); err != nil {
+		t.Errorf("marstek_payload_fresh should be present at cold start: %v", err)
 	}
 
 	// No device gauge should be present before any Update.

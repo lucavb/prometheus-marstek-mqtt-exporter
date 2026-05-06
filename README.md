@@ -26,8 +26,10 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_rated_output_watts`            |                     | Rated output power in watts                               |
 | `marstek_rated_input_watts`             |                     | Rated input power in watts                                |
 | `marstek_surplus_feed_in_enabled`       |                     | 1 if surplus feed-in is enabled, 0 otherwise              |
-| `marstek_up`                            |                     | 1 if the last MQTT poll received a response, 0 otherwise  |
-| `marstek_last_update_timestamp_seconds` |                     | Unix timestamp of the last successful MQTT update         |
+| `marstek_up`                            |                     | 1 if the last MQTT poll received a parseable payload, 0 otherwise |
+| `marstek_last_update_timestamp_seconds` |                     | Unix timestamp of the last successfully parsed payload (compatibility alias) |
+| `marstek_last_payload_timestamp_seconds` |                    | Unix timestamp of the last successfully parsed payload |
+| `marstek_payload_fresh`                 |                     | 1 if the last successfully parsed payload is still within `metric_ttl`, 0 otherwise |
 | `marstek_solar_input_watts`             | `input` (1, 2)      | Solar input power in watts                                |
 | `marstek_output_watts`                  | `output` (1, 2)     | Output power in watts                                     |
 | `marstek_output_enabled`                | `output` (1, 2)     | Output enabled state (1=on, 0=off)                        |
@@ -36,7 +38,9 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_battery_pack_soc_percent`      | `pack` (0, 1, 2)    | Per-pack state of charge. `pack=0` is the aggregate `pe`; `pack=1`/`pack=2` are the `a1`/`a2` channels |
 | `marstek_mqtt_m_channel`                | `channel` (0–3)     | Raw `m0`..`m3` channels from cd=0. Semantics partially decoded (m3 ≈ load watts); keep for anomaly detection |
 | `marstek_scrapes_total`                 |                     | Total number of cd=1 polls sent                           |
-| `marstek_scrape_errors_total`           |                     | Polls that received no response within the timeout        |
+| `marstek_scrape_errors_total`           |                     | Total failed polls, including publish failures and response timeouts |
+| `marstek_poll_timeouts_total`           |                     | Polls that timed out waiting for a parseable payload |
+| `marstek_poll_publish_errors_total`     |                     | Polls that failed before the MQTT publish completed |
 
 
 ### ESP32 recovery metrics (only present when `MARSTEK_ESP32_BASE_URL` is set)
@@ -79,7 +83,7 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_cell_voltage_spread_millivolts`               | `pack` (0, 1, 2)                                                                              | Difference between max and min cell voltage per pack in millivolts (`b0max`−`b0min`). Indicates cell balancing state; large values during CV charge are normal. |
 
 
-`marstek_up` is strictly tied to MQTT. Cloud reachability is tracked independently via `marstek_cloud_last_report_timestamp_seconds`.
+`marstek_up` is strictly tied to MQTT poll health. `marstek_last_payload_timestamp_seconds` and `marstek_payload_fresh` track cached payload freshness independently, so it is normal to see device gauges briefly remain present while `marstek_up=0` if the last parsed payload is still within `metric_ttl`. Cloud reachability is tracked independently via `marstek_cloud_last_report_timestamp_seconds`.
 
 Example PromQL alerts:
 
@@ -100,6 +104,15 @@ changes(count by (firmware_version) (marstek_device_info)[1h:]) > 0
 
 # A new, unlabelled puterrinfo header index appeared — document and promote to a named metric:
 max by (index) (marstek_cloud_solar_errinfo_header_value) unless on(index) marstek_cloud_solar_errinfo_header_value offset 7d
+
+# Polling is unhealthy, but the last parsed payload is still fresh:
+marstek_up == 0 and marstek_payload_fresh == 1
+
+# No fresh device payload has been parsed within the TTL window:
+(time() - marstek_last_payload_timestamp_seconds) > 90
+
+# Response timeouts are accumulating:
+increase(marstek_poll_timeouts_total[30m]) > 0
 ```
 
 ## Configuration
@@ -291,7 +304,7 @@ The Marstek B2500-D (device type `HMJ-2`) uses the Hame MQTT protocol. Once conf
 
 The device **does not push telemetry unprompted**. Publishing `cd=1` to the command topic causes it to immediately respond with a full status payload on the device topic. The exporter does this on every `--poll-interval`.
 
-The status payload is a flat `key=value,key=value,...` string. The exporter splits it on `,`, maps known keys to Prometheus metrics, and updates the gauges. If no response arrives within `--response-timeout`, `marstek_up` is set to `0` and `marstek_scrape_errors_total` is incremented.
+The status payload is a flat `key=value,key=value,...` string. The exporter splits it on `,`, maps known keys to Prometheus metrics, and updates the gauges. A parseable payload sets `marstek_up=1`, refreshes `marstek_last_payload_timestamp_seconds`, and keeps `marstek_payload_fresh=1` until `metric_ttl` expires. If no parseable response arrives within `--response-timeout`, `marstek_up` is set to `0`, `marstek_scrape_errors_total` is incremented, and `marstek_poll_timeouts_total` tracks the timeout specifically.
 
 Automatic reconnection to the broker is handled by the Paho MQTT client (`SetAutoReconnect(true)`, `SetConnectRetry(true)`).
 

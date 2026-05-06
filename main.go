@@ -58,12 +58,7 @@ func main() {
 	responseCh := make(chan struct{}, 1)
 
 	if err := client.Subscribe(func(payload string) {
-		coll.Update(payload)
-		coll.MarkUp()
-		select {
-		case responseCh <- struct{}{}:
-		default:
-		}
+		handleDevicePayload(coll, responseCh, payload)
 	}); err != nil {
 		slog.Error("failed to subscribe to device topic", "error", err)
 		return
@@ -204,6 +199,17 @@ func updateMissedPolls(missedPolls *int, result pollResult, threshold int) bool 
 	return true
 }
 
+func handleDevicePayload(coll *collector.Collector, responseCh chan<- struct{}, payload string) {
+	if !coll.Update(payload) {
+		return
+	}
+	coll.MarkUp()
+	select {
+	case responseCh <- struct{}{}:
+	default:
+	}
+}
+
 // runPoll sends one cd=1 poll and waits for a response or timeout.
 // Returns a non-nil error only when ctx is cancelled, which signals the caller to stop.
 func runPoll(ctx context.Context, client poller, coll *collector.Collector, timeout time.Duration, responseCh <-chan struct{}) (pollResult, error) {
@@ -216,7 +222,7 @@ func runPoll(ctx context.Context, client poller, coll *collector.Collector, time
 	coll.IncScrape()
 	if err := client.Poll(); err != nil {
 		slog.Warn("poll publish failed", "error", err)
-		coll.IncScrapeError()
+		coll.IncPollPublishError()
 		coll.MarkDown()
 		return pollPublishFailed, nil
 	}
@@ -229,7 +235,7 @@ func runPoll(ctx context.Context, client poller, coll *collector.Collector, time
 		return pollResponded, nil
 	case <-timer.C:
 		slog.Warn("poll timed out waiting for device response", "timeout", timeout)
-		coll.IncScrapeError()
+		coll.IncPollTimeout()
 		coll.MarkDown()
 		return pollTimedOut, nil
 	case <-ctx.Done():
