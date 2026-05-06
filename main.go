@@ -22,6 +22,7 @@ type pollResult int
 
 const (
 	pollResponded pollResult = iota
+	pollFreshTelemetry
 	pollPublishFailed
 	pollTimedOut
 )
@@ -151,8 +152,9 @@ func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, 
 
 	missedPolls := 0
 	seenSuccessfulResponse := false
+	freshTelemetryWindow := interval + timeout
 	handleResult := func(result pollResult) {
-		if result == pollResponded {
+		if isHealthyPollResult(result) {
 			seenSuccessfulResponse = true
 			if supervisor != nil {
 				supervisor.EnableRecovery()
@@ -164,7 +166,7 @@ func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, 
 		}
 	}
 
-	result, err := runPoll(ctx, client, coll, timeout, responseCh)
+	result, err := runPoll(ctx, client, coll, timeout, freshTelemetryWindow, responseCh)
 	if err != nil {
 		return
 	}
@@ -175,7 +177,7 @@ func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, 
 	for {
 		select {
 		case <-ticker.C:
-			result, err := runPoll(ctx, client, coll, timeout, responseCh)
+			result, err := runPoll(ctx, client, coll, timeout, freshTelemetryWindow, responseCh)
 			if err != nil {
 				return
 			}
@@ -187,7 +189,7 @@ func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, 
 }
 
 func updateMissedPolls(missedPolls *int, result pollResult, threshold int) bool {
-	if result == pollResponded {
+	if isHealthyPollResult(result) {
 		*missedPolls = 0
 		return false
 	}
@@ -197,6 +199,10 @@ func updateMissedPolls(missedPolls *int, result pollResult, threshold int) bool 
 	}
 	*missedPolls = 0
 	return true
+}
+
+func isHealthyPollResult(result pollResult) bool {
+	return result == pollResponded || result == pollFreshTelemetry
 }
 
 func handleDevicePayload(coll *collector.Collector, responseCh chan<- struct{}, payload string) {
@@ -210,9 +216,10 @@ func handleDevicePayload(coll *collector.Collector, responseCh chan<- struct{}, 
 	}
 }
 
-// runPoll sends one cd=1 poll and waits for a response or timeout.
+// runPoll sends one cd=1 poll and waits for either an in-window response or a
+// timeout, after which it falls back to recent telemetry freshness.
 // Returns a non-nil error only when ctx is cancelled, which signals the caller to stop.
-func runPoll(ctx context.Context, client poller, coll *collector.Collector, timeout time.Duration, responseCh <-chan struct{}) (pollResult, error) {
+func runPoll(ctx context.Context, client poller, coll *collector.Collector, timeout, freshTelemetryWindow time.Duration, responseCh <-chan struct{}) (pollResult, error) {
 	// Drain any stale response from the previous round.
 	select {
 	case <-responseCh:
@@ -234,7 +241,11 @@ func runPoll(ctx context.Context, client poller, coll *collector.Collector, time
 		slog.Debug("poll response received")
 		return pollResponded, nil
 	case <-timer.C:
-		slog.Warn("poll timed out waiting for device response", "timeout", timeout)
+		if coll.HasFreshPayload(freshTelemetryWindow) {
+			slog.Debug("poll deadline passed but recent telemetry is still fresh", "fresh_telemetry_window", freshTelemetryWindow)
+			return pollFreshTelemetry, nil
+		}
+		slog.Warn("poll timed out and no recent device telemetry was available", "timeout", timeout, "fresh_telemetry_window", freshTelemetryWindow)
 		coll.IncPollTimeout()
 		coll.MarkDown()
 		return pollTimedOut, nil

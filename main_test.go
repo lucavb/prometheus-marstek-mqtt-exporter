@@ -66,7 +66,7 @@ func TestRunPollResponded(t *testing.T) {
 		responseCh <- struct{}{}
 	}}
 
-	result, err := runPoll(context.Background(), poller, testCollector(t), time.Second, responseCh)
+	result, err := runPoll(context.Background(), poller, testCollector(t), time.Second, 2*time.Second, responseCh)
 	if err != nil {
 		t.Fatalf("runPoll: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRunPollResponded(t *testing.T) {
 }
 
 func TestRunPollPublishFailed(t *testing.T) {
-	result, err := runPoll(context.Background(), fakePoller{err: errors.New("publish failed")}, testCollector(t), time.Second, make(chan struct{}, 1))
+	result, err := runPoll(context.Background(), fakePoller{err: errors.New("publish failed")}, testCollector(t), time.Second, 2*time.Second, make(chan struct{}, 1))
 	if err != nil {
 		t.Fatalf("runPoll: %v", err)
 	}
@@ -86,12 +86,27 @@ func TestRunPollPublishFailed(t *testing.T) {
 }
 
 func TestRunPollTimedOut(t *testing.T) {
-	result, err := runPoll(context.Background(), fakePoller{}, testCollector(t), time.Millisecond, make(chan struct{}, 1))
+	result, err := runPoll(context.Background(), fakePoller{}, testCollector(t), time.Millisecond, 2*time.Millisecond, make(chan struct{}, 1))
 	if err != nil {
 		t.Fatalf("runPoll: %v", err)
 	}
 	if result != pollTimedOut {
 		t.Fatalf("result = %v, want pollTimedOut", result)
+	}
+}
+
+func TestRunPollUsesFreshBackgroundTelemetry(t *testing.T) {
+	coll := testCollector(t)
+	responseCh := make(chan struct{}, 1)
+
+	handleDevicePayload(coll, responseCh, "pe=75")
+
+	result, err := runPoll(context.Background(), fakePoller{}, coll, time.Millisecond, time.Second, responseCh)
+	if err != nil {
+		t.Fatalf("runPoll: %v", err)
+	}
+	if result != pollFreshTelemetry {
+		t.Fatalf("result = %v, want pollFreshTelemetry", result)
 	}
 }
 
@@ -108,7 +123,7 @@ func TestHandleDevicePayloadSignalsParseableResponse(t *testing.T) {
 	}
 
 	expected := `
-# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# HELP marstek_up 1 if recent parseable MQTT telemetry is healthy, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 1
 `
@@ -130,7 +145,7 @@ func TestHandleDevicePayloadIgnoresUnparseableResponse(t *testing.T) {
 	}
 
 	expected := `
-# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# HELP marstek_up 1 if recent parseable MQTT telemetry is healthy, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 0
 `
@@ -165,6 +180,16 @@ func TestUpdateMissedPollsResponseResetsCounter(t *testing.T) {
 	}
 }
 
+func TestUpdateMissedPollsFreshTelemetryResetsCounter(t *testing.T) {
+	missed := 2
+	if updateMissedPolls(&missed, pollFreshTelemetry, 3) {
+		t.Fatal("fresh telemetry should not trigger recovery")
+	}
+	if missed != 0 {
+		t.Fatalf("missed = %d, want reset to 0", missed)
+	}
+}
+
 func TestRunPollLoopEnablesRecoveryAfterFirstResponse(t *testing.T) {
 	responseCh := make(chan struct{}, 1)
 	supervisor := &fakeSupervisor{}
@@ -186,6 +211,46 @@ func TestRunPollLoopEnablesRecoveryAfterFirstResponse(t *testing.T) {
 	enableCalls, _ := supervisor.counts()
 	if enableCalls != 1 {
 		t.Fatalf("enable calls = %d, want 1", enableCalls)
+	}
+}
+
+func TestRunPollLoopKeepsFreshTelemetryHealthy(t *testing.T) {
+	coll := testCollector(t)
+	supervisor := &fakeSupervisor{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(2 * time.Millisecond)
+		defer ticker.Stop()
+		defer close(done)
+		for {
+			select {
+			case <-ticker.C:
+				if !coll.Update("pe=75") {
+					t.Error("expected payload refresh to parse")
+					return
+				}
+				coll.MarkUp()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go runPollLoop(ctx, fakePoller{}, coll, 5*time.Millisecond, time.Millisecond, 2, supervisor, make(chan struct{}, 1))
+	time.Sleep(35 * time.Millisecond)
+	cancel()
+	<-done
+	time.Sleep(10 * time.Millisecond)
+
+	enableCalls, triggerCalls := supervisor.counts()
+	if enableCalls == 0 {
+		t.Fatal("expected recovery to be enabled after fresh telemetry")
+	}
+	if triggerCalls != 0 {
+		t.Fatalf("trigger calls = %d, want 0 while telemetry stays fresh", triggerCalls)
 	}
 }
 

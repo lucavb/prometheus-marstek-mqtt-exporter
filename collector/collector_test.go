@@ -83,7 +83,7 @@ func TestStaleMetricsOmitted(t *testing.T) {
 
 	// Meta metrics must still be present.
 	expected := `
-# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# HELP marstek_up 1 if recent parseable MQTT telemetry is healthy, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 1
 `
@@ -112,6 +112,27 @@ marstek_payload_fresh{device_id="test-device",device_type="HMJ-2"} 0
 	}
 }
 
+func TestHasFreshPayload(t *testing.T) {
+	base := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	now := base
+	c, _ := newTestCollector(5*time.Minute, func() time.Time { return now })
+
+	if c.HasFreshPayload(time.Minute) {
+		t.Fatal("expected cold-start collector to report no fresh payload")
+	}
+	if !c.Update(samplePayload) {
+		t.Fatal("expected sample payload to parse")
+	}
+	if !c.HasFreshPayload(time.Minute) {
+		t.Fatal("expected payload to be fresh immediately after update")
+	}
+
+	now = base.Add(90 * time.Second)
+	if c.HasFreshPayload(time.Minute) {
+		t.Fatal("expected payload to go stale once max age has elapsed")
+	}
+}
+
 func TestFreshPayloadCanCoexistWithDownPollHealth(t *testing.T) {
 	fixedNow := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	c, reg := newTestCollector(5*time.Minute, func() time.Time { return fixedNow })
@@ -132,7 +153,7 @@ marstek_battery_soc_percent{device_id="test-device",device_type="HMJ-2"} 75
 	}
 
 	expected = `
-# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# HELP marstek_up 1 if recent parseable MQTT telemetry is healthy, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 0
 `
@@ -157,7 +178,7 @@ func TestMetaMetricsAlwaysPresent(t *testing.T) {
 	// No Update or MarkUp called — cold start.
 
 	expected := `
-# HELP marstek_up 1 if the last poll received a parseable device payload, 0 otherwise
+# HELP marstek_up 1 if recent parseable MQTT telemetry is healthy, 0 otherwise
 # TYPE marstek_up gauge
 marstek_up{device_id="test-device",device_type="HMJ-2"} 0
 `
@@ -175,7 +196,7 @@ marstek_scrapes_total{device_id="test-device",device_type="HMJ-2"} 0
 	}
 
 	expected = `
-# HELP marstek_scrape_errors_total Total number of cd=1 polls that failed, including publish failures and response timeouts
+# HELP marstek_scrape_errors_total Total number of cd=1 polls that failed, including publish failures and cases where no recent parseable telemetry was available by the timeout deadline
 # TYPE marstek_scrape_errors_total counter
 marstek_scrape_errors_total{device_id="test-device",device_type="HMJ-2"} 0
 `
@@ -184,7 +205,7 @@ marstek_scrape_errors_total{device_id="test-device",device_type="HMJ-2"} 0
 	}
 
 	expected = `
-# HELP marstek_poll_timeouts_total Number of cd=1 polls that timed out waiting for a parseable device payload
+# HELP marstek_poll_timeouts_total Number of cd=1 polls after which no recent parseable device telemetry was available by the timeout deadline
 # TYPE marstek_poll_timeouts_total counter
 marstek_poll_timeouts_total{device_id="test-device",device_type="HMJ-2"} 0
 `

@@ -74,7 +74,7 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 		)
 	}
 
-	upDesc := newDesc("up", "1 if the last poll received a parseable device payload, 0 otherwise")
+	upDesc := newDesc("up", "1 if recent parseable MQTT telemetry is healthy, 0 otherwise")
 	lastUpdateDesc := newDesc("last_update_timestamp_seconds", "Unix timestamp of the last successfully parsed device payload")
 	lastPayloadDesc := newDesc("last_payload_timestamp_seconds", "Unix timestamp of the last successfully parsed device payload")
 	payloadFreshDesc := newDesc("payload_fresh", "1 if the last successfully parsed device payload is still within metric_ttl, 0 otherwise")
@@ -128,12 +128,12 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 	})
 	scrapeErrorsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name:        prometheus.BuildFQName(namespace, "", "scrape_errors_total"),
-		Help:        "Total number of cd=1 polls that failed, including publish failures and response timeouts",
+		Help:        "Total number of cd=1 polls that failed, including publish failures and cases where no recent parseable telemetry was available by the timeout deadline",
 		ConstLabels: constLabels,
 	})
 	pollTimeoutsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name:        prometheus.BuildFQName(namespace, "", "poll_timeouts_total"),
-		Help:        "Number of cd=1 polls that timed out waiting for a parseable device payload",
+		Help:        "Number of cd=1 polls after which no recent parseable device telemetry was available by the timeout deadline",
 		ConstLabels: constLabels,
 	})
 	pollPublishErrorsTotal := prometheus.NewCounter(prometheus.CounterOpts{
@@ -329,6 +329,19 @@ func (c *Collector) IncPollTimeout() {
 func (c *Collector) IncPollPublishError() {
 	c.scrapeErrorsTotal.Inc()
 	c.pollPublishErrorsTotal.Inc()
+}
+
+func (c *Collector) HasFreshPayload(maxAge time.Duration) bool {
+	if maxAge < 0 {
+		return false
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.lastUpdateAt.IsZero() {
+		return false
+	}
+	return c.nowFn().Sub(c.lastUpdateAt) <= maxAge
 }
 
 func boolToFloat(v bool) float64 {
