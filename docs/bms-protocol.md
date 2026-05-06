@@ -362,7 +362,7 @@ algorithm internals) — both struck through in `docs/roadmap.md`
 after this pass, with the hardware-tap work surfacing as a new
 follow-up.
 - Related event codes in `emulator/solar_errinfo_codes.go`:
-`25`, `35`, `73`, `75`, `81`, `82`, `89`, `90`, `95`, `104`.
+`25`, `35`, `73`, `81`, `82`, `89`, `90`, `95`, `104`.
 - Related metrics exposed during Phase 0 of this plan (see
 `README.md` §Metrics): `marstek_battery_pack_soc_percent`,
 `marstek_mqtt_m_channel`, `marstek_cloud_battery_pack_soc_percent`,

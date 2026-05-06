@@ -65,7 +65,7 @@ package emulator
 //	66  ble_soc_state_changed          BLE SoC state transition
 //	73  bms_comm_watchdog              BMS watchdog triggered
 //	74  mqtt_ext_conn_failed           aux MQTT client AT+QMTCONN rejected (4 retries)
-//	75  fault_flags_bitmap             BMS fault flags word changed (or wifi scan giveup)
+//	75  wifi_reason_rssi              WiFi reason+RSSI packed value (or wifi scan giveup)
 //	77  soc_below_threshold            SoC < charge threshold
 //	78  mqtt_ext_session_up            aux MQTT client subscribed (session established)
 //	80  setreport_response_parsed      setreport JSON alt-key branch parsed
@@ -155,7 +155,7 @@ type solarErrInfoHeader struct {
 // appended here and the rest of the parse continues.
 type solarErrInfoParsed struct {
 	UID          string
-	ReportType   int    // 0, 1, 2 (battery slot), or -1 if unknown/unset
+	ReportType   int // 0, 1, 2 (battery slot), or -1 if unknown/unset
 	Header       []int64
 	ParsedHeader solarErrInfoHeader
 	// Events is populated for Type 0 uploads (triples).
@@ -361,6 +361,18 @@ func (e *Emulator) updateErrInfoNamedMetrics(p *solarErrInfoParsed) {
 		code := strconv.FormatInt(ev.Code, 10)
 		e.solarErrInfoEventTotal.WithLabelValues(uid, battery, code, ev.Name).Inc()
 		e.solarErrInfoLastEventTS.WithLabelValues(uid, battery, code, ev.Name).Set(float64(ev.TS))
+		if ev.Code == 75 {
+			decoded := decodeErrInfoCode75(ev.Value)
+			if decoded.ScanTimeout {
+				e.solarErrInfoWiFiTimeout.Inc()
+				continue
+			}
+			if decoded.ReasonPresent {
+				reason := strconv.FormatUint(uint64(decoded.Reason), 10)
+				e.solarErrInfoWiFiReason.WithLabelValues(uid, battery, reason).Inc()
+				e.solarErrInfoWiFiRSSI.WithLabelValues(uid, battery, reason).Set(float64(decoded.RSSIDBm))
+			}
+		}
 	}
 	for _, q := range p.Quintuples {
 		code := strconv.FormatInt(q.Code, 10)
@@ -415,9 +427,20 @@ func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
 
 	// Build a concise list of event summaries for the log.
 	eventSummaries := make([]string, 0, len(parsed.Events)+len(parsed.Quintuples))
+	code75Decoded := make([]string, 0, len(parsed.Events))
 	for _, ev := range parsed.Events {
 		tsHuman := time.Unix(ev.TS, 0).UTC().Format(time.RFC3339)
 		desc := errInfoCodeDescription(ev.Code)
+		if ev.Code == 75 {
+			decoded := decodeErrInfoCode75(ev.Value)
+			if decoded.ScanTimeout {
+				code75Decoded = append(code75Decoded,
+					fmt.Sprintf("{t=%s raw=0x%08x scan_timeout=true}", tsHuman, decoded.RawU32))
+			} else if decoded.ReasonPresent {
+				code75Decoded = append(code75Decoded,
+					fmt.Sprintf("{t=%s raw=0x%08x reason=%d rssi_dbm=%d}", tsHuman, decoded.RawU32, decoded.Reason, decoded.RSSIDBm))
+			}
+		}
 		if desc != "" {
 			eventSummaries = append(eventSummaries,
 				fmt.Sprintf("{t=%s code=%d(%s) desc=%q value=%d}", tsHuman, ev.Code, ev.Name, desc, ev.Value))
@@ -459,6 +482,9 @@ func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parsed.ParseErrors) > 0 {
 		attrs = append(attrs, "parse_errors", parsed.ParseErrors)
+	}
+	if len(code75Decoded) > 0 {
+		attrs = append(attrs, "code75_decoded", code75Decoded)
 	}
 	slog.Info("cloud emulator: solar errinfo upload", attrs...)
 

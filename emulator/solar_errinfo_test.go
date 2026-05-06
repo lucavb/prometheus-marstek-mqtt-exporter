@@ -323,3 +323,35 @@ func TestSolarErrInfoLogsParsed(t *testing.T) {
 		}
 	}
 }
+
+func TestSolarErrInfoCode75WiFiMetrics(t *testing.T) {
+	em, reg := newTestEmulator(t, time.UTC)
+	h := em.Handler()
+
+	body := "3601115030374d33300f1365:0:110:90:0:0:67:75.1778076610.-4653054,75.1778076970.0,75.1778077249.-4587518,"
+	req := httptest.NewRequest(http.MethodPost, pathSolarErrInfo, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.ContentLength = int64(len(body))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if err := testutil.CollectAndCompare(reg, strings.NewReader(`
+# HELP marstek_solar_errinfo_wifi_reason_total Total number of decoded puterrinfo code 75 non-zero events by Wi-Fi reason byte.
+# TYPE marstek_solar_errinfo_wifi_reason_total counter
+marstek_solar_errinfo_wifi_reason_total{battery="0",device_id="testdeviceid",device_type="TEST-TYPE",reason="2",uid="3601115030374d33300f1365"} 2
+`), "marstek_solar_errinfo_wifi_reason_total"); err != nil {
+		t.Errorf("wifi reason metric mismatch: %v", err)
+	}
+
+	if err := testutil.CollectAndCompare(reg, strings.NewReader(`
+# HELP marstek_solar_errinfo_wifi_scan_timeout_total Total number of puterrinfo code 75 zero-value events, corresponding to Wi-Fi scan/topic-probe timeout path.
+# TYPE marstek_solar_errinfo_wifi_scan_timeout_total counter
+marstek_solar_errinfo_wifi_scan_timeout_total{device_id="testdeviceid",device_type="TEST-TYPE"} 1
+`), "marstek_solar_errinfo_wifi_scan_timeout_total"); err != nil {
+		t.Errorf("wifi scan timeout metric mismatch: %v", err)
+	}
+
+	// Last non-zero reason=2 sample in body is -70 dBm (0xffba0002).
+	if got := testutil.ToFloat64(em.solarErrInfoWiFiRSSI.WithLabelValues("3601115030374d33300f1365", "0", "2")); got != -70 {
+		t.Errorf("wifi rssi gauge = %v, want -70", got)
+	}
+}

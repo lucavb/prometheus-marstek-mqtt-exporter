@@ -203,7 +203,7 @@ dropped silently. Overflow: FIFO — oldest evicted, newest appended.
 |  66  | `ble_soc_state_changed`         | BLE SoC state transition; value = state byte                           |
 |  73  | `bms_comm_watchdog`             | BMS watchdog triggered; value = 0x11 constant                          |
 |  74  | `mqtt_ext_conn_failed`          | Secondary/aux MQTT client AT+QMTCONN rejected after 4 retries; value = broker connect-reject status |
-|  75  | `fault_flags_bitmap`            | BMS fault-flags word changed OR wifi_scan_fsm gave up after 2 timeouts; value = byte \| (u16 << 16) or 0 |
+|  75  | `wifi_reason_rssi`              | WiFi scan/topic-probe timeout OR packed WiFi reason+RSSI snapshot; value = `0` (scan timeout) or `reason_low8 \| (int16 rssi_dbm << 16)` |
 |  77  | `soc_below_threshold`           | SoC < charge threshold; value = SoC %                                  |
 |  78  | `mqtt_ext_session_up`           | Secondary MQTT session established (AT+QMTSUB accepted); value = 1 or subscribed-topics feature bitmap (a0b<<3 \| a0c<<2 \| a0d<<1 \| base) |
 |  80  | `setreport_response_parsed`     | setreport HTTP response parsed via alternate JSON key branch; value = response flag byte |
@@ -262,7 +262,31 @@ The emulator exposes per-battery named gauges and per-event counters:
 | `marstek_solar_errinfo_field3..5`        | `uid, battery`      | Status flag bytes                  |
 | `marstek_solar_errinfo_event_total`      | `uid, battery, code, name` | Count of events received    |
 | `marstek_solar_errinfo_last_event_ts_seconds` | `uid, battery, code, name` | Unix ts of latest event  |
+| `marstek_solar_errinfo_wifi_rssi_dbm` | `uid, battery, reason` | Decoded RSSI from code `75` non-zero events |
+| `marstek_solar_errinfo_wifi_reason_total` | `uid, battery, reason` | Count of code `75` non-zero events per reason |
+| `marstek_solar_errinfo_wifi_scan_timeout_total` | *(const labels only)* | Count of code `75` zero-value scan-timeout events |
 | `marstek_cloud_solar_errinfo_header_value` | `index`           | Positional header integers (backward compat) |
+
+### Local containment validation (DNS-hijacked target state)
+
+- Sinkhole or locally resolve `eu.hamedata.com` and block vendor/AWS fallback hosts discovered in captures.
+- Keep a pcap check in the validation loop:
+  - DNS answers should resolve to local IPs only.
+  - No outbound TCP `8883` to public addresses.
+  - No plaintext MQTT `CONNECT` attempts to external `:8883`.
+- Use code `86/87/88` bursts as a canary for cloud/TLS churn that usually means containment drift or emulator mismatch.
+
+### WiFi-drop triage sequence
+
+- Correlate these event families around each drop:
+  - `75` (`wifi_reason_rssi`) for reason byte + RSSI snapshot.
+  - `106` (`wifi_disconnect`) for repeated modem disconnect reason `1`/`2`.
+  - `74/85/78` for MQTT aux connect/subscribe/session behavior.
+- For local-broker setup, verify ordering:
+  1. BLE opcode `0x20` write,
+  2. optional MQTT reset/restart,
+  3. subsequent `75/106` events and RSSI trend.
+- If `75=0` appears repeatedly, focus on scan/probe reliability before attributing instability to BMS behavior.
 
 ### Legacy Solar/neng PHP API (not reachable from here)
 

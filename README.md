@@ -70,6 +70,9 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_cloud_report_payload_bytes`                   |                                                                                               | Decoded plaintext size of the latest telemetry report. A change may indicate a firmware update.                                         |
 | `marstek_cloud_report_decode_errors_total`             |                                                                                               | Payloads that could not be decrypted or parsed. A non-zero value may indicate a firmware key rotation.                                  |
 | `marstek_cloud_solar_errinfo_header_value`             | `index` (0, 1, 2, …)                                                                          | Integer values from the `puterrinfo` request header, keyed by zero-based position. `index=1` is `sw_version`; `index=2..4` are `pe0..pe2`; other indices are not yet fully identified. A new index appearing means firmware added a header field. |
+| `marstek_solar_errinfo_wifi_rssi_dbm`                  | `uid`, `battery`, `reason`                                                                    | Decoded RSSI in dBm from non-zero code `75` events (`reason | (rssi << 16)`). |
+| `marstek_solar_errinfo_wifi_reason_total`              | `uid`, `battery`, `reason`                                                                    | Count of non-zero code `75` events grouped by decoded low-byte reason. |
+| `marstek_solar_errinfo_wifi_scan_timeout_total`        |                                                                                               | Count of code `75` zero-value events (Wi-Fi scan/topic-probe timeout path). |
 | `marstek_cell_voltage_millivolts`                      | `pack` (0, 1, 2), `bound` (min, max)                                                          | Per-pack min/max cell voltage in millivolts, from the cloud telemetry report.                                                           |
 | `marstek_cell_voltage_cell_index`                      | `pack` (0, 1, 2), `bound` (min, max)                                                          | Index of the min/max voltage cell within each pack, from the cloud telemetry report.                                                    |
 | `marstek_solar_input_voltage_millivolts`               | `input` (1, 2)                                                                                | Per-solar-input voltage in millivolts, from the cloud telemetry report.                                                                 |
@@ -113,6 +116,14 @@ marstek_up == 0
 
 # Response timeouts are accumulating:
 increase(marstek_poll_timeouts_total[30m]) > 0
+
+# Wi-Fi scan timeout path is firing in puterrinfo:
+increase(marstek_solar_errinfo_wifi_scan_timeout_total[30m]) > 0
+
+# Wi-Fi reason=2 events are increasing while RSSI is weak:
+increase(marstek_solar_errinfo_wifi_reason_total{reason="2"}[30m]) > 0
+and
+avg_over_time(marstek_solar_errinfo_wifi_rssi_dbm{reason="2"}[30m]) < -70
 ```
 
 ## Configuration

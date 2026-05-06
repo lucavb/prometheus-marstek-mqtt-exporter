@@ -34,6 +34,9 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 	solarErrInfoField5 *prometheus.GaugeVec,
 	solarErrInfoEventTotal *prometheus.CounterVec,
 	solarErrInfoLastEventTS *prometheus.GaugeVec,
+	solarErrInfoWiFiRSSI *prometheus.GaugeVec,
+	solarErrInfoWiFiReason *prometheus.CounterVec,
+	solarErrInfoWiFiTimeout prometheus.Counter,
 ) {
 	reportsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name:        "marstek_cloud_reports_total",
@@ -245,6 +248,27 @@ func registerMetrics(reg prometheus.Registerer, constLabels prometheus.Labels) (
 		ConstLabels: constLabels,
 	}, []string{"uid", "battery", "code", "name"})
 	reg.MustRegister(solarErrInfoLastEventTS)
+
+	solarErrInfoWiFiRSSI = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name:        "marstek_solar_errinfo_wifi_rssi_dbm",
+		Help:        "Decoded RSSI in dBm from puterrinfo code 75 non-zero events. Labels include the decoded low-byte reason.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery", "reason"})
+	reg.MustRegister(solarErrInfoWiFiRSSI)
+
+	solarErrInfoWiFiReason = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name:        "marstek_solar_errinfo_wifi_reason_total",
+		Help:        "Total number of decoded puterrinfo code 75 non-zero events by Wi-Fi reason byte.",
+		ConstLabels: constLabels,
+	}, []string{"uid", "battery", "reason"})
+	reg.MustRegister(solarErrInfoWiFiReason)
+
+	solarErrInfoWiFiTimeout = prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        "marstek_solar_errinfo_wifi_scan_timeout_total",
+		Help:        "Total number of puterrinfo code 75 zero-value events, corresponding to Wi-Fi scan/topic-probe timeout path.",
+		ConstLabels: constLabels,
+	})
+	reg.MustRegister(solarErrInfoWiFiTimeout)
 
 	return
 }

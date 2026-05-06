@@ -44,7 +44,7 @@ var errInfoCodeName = map[int64]string{
 	66:  "ble_soc_state_changed",
 	73:  "bms_comm_watchdog",
 	74:  "mqtt_ext_conn_failed",
-	75:  "fault_flags_bitmap",
+	75:  "wifi_reason_rssi",
 	77:  "soc_below_threshold",
 	78:  "mqtt_ext_session_up",
 	80:  "setreport_response_parsed",
@@ -98,7 +98,7 @@ var errInfoCodeDesc = map[int64]string{
 	66:  "BLE SoC state changed (ble_conn_state_machine); value = state byte or CONCAT(v_raw, v_threshold)",
 	73:  "BMS communication watchdog triggered (bms_fault_flags_monitor); value = 0x11 constant",
 	74:  "Secondary MQTT client AT+QMTCONN rejected after 4 retries (auxiliary session used by http_getdateinfo); value = broker connect-reject status",
-	75:  "BMS fault flags bitmap changed (bms_fault_flags_monitor) OR WiFi scan retries exhausted (wifi_scan_fsm); value = byte_field | (u16_field << 16), or 0 for wifi scan",
+	75:  "WiFi status event: scan retries exhausted (wifi_scan_fsm, value=0) OR packed reason+RSSI from top_state_machine; value = reason_low8 | (int16 rssi_dbm << 16)",
 	77:  "SoC fell below charge threshold (mqtt_publish_fsm / battery_charge_monitor); value = SoC %",
 	78:  "Secondary MQTT client AT+QMTSUB succeeded (session fully established); value = 1 or subscribed-topics feature-flag bitmap (flag_a0b<<3 | flag_a0c<<2 | flag_a0d<<1 | base)",
 	80:  "setreport HTTP response JSON parsed via alternate key branch (setreport_response_handler); value = response flag byte",
@@ -139,4 +139,35 @@ func errInfoCodeLabel(code int64) string {
 // falling back to an empty string for codes not in the dictionary.
 func errInfoCodeDescription(code int64) string {
 	return errInfoCodeDesc[code]
+}
+
+// errInfoCode75Decoded is the decoded representation of event code 75.
+// Firmware emits this event from two sites:
+//   - wifi_scan_fsm: enqueue_event(75, 0)
+//   - top_state_machine: enqueue_event(75, reason | (rssi_dbm << 16))
+type errInfoCode75Decoded struct {
+	RawU32        uint32
+	ScanTimeout   bool
+	Reason        uint8
+	RSSIDBm       int16
+	ReasonPresent bool
+}
+
+// decodeErrInfoCode75 decodes a signed int64 payload captured from puterrinfo
+// into the firmware's observed code-75 layout.
+func decodeErrInfoCode75(value int64) errInfoCode75Decoded {
+	raw := uint32(value)
+	if raw == 0 {
+		return errInfoCode75Decoded{
+			RawU32:      raw,
+			ScanTimeout: true,
+		}
+	}
+
+	return errInfoCode75Decoded{
+		RawU32:        raw,
+		Reason:        uint8(raw & 0xff),
+		RSSIDBm:       int16((raw >> 16) & 0xffff),
+		ReasonPresent: true,
+	}
 }

@@ -28,17 +28,17 @@ type Emulator struct {
 	deviceInfo                  *prometheus.GaugeVec
 
 	// cloud-report-only metrics (not available via MQTT cd=1)
-	cellVoltageMillivolts  *prometheus.GaugeVec // b{n}max/min
-	cellVoltageIndex       *prometheus.GaugeVec // b{n}maxn/minn
-	solarInputVoltage      *prometheus.GaugeVec // pv1v/pv2v
-	solarInputPower        *prometheus.GaugeVec // pv1/pv2 (watts)
-	outputVoltage          *prometheus.GaugeVec // out1v/out2v
-	cloudDeviceTimestamp   prometheus.Gauge
-	wifiBTStatus           prometheus.Gauge
-	cloudBatteryPackSoC    *prometheus.GaugeVec // pe0/pe1/pe2
+	cellVoltageMillivolts      *prometheus.GaugeVec // b{n}max/min
+	cellVoltageIndex           *prometheus.GaugeVec // b{n}maxn/minn
+	solarInputVoltage          *prometheus.GaugeVec // pv1v/pv2v
+	solarInputPower            *prometheus.GaugeVec // pv1/pv2 (watts)
+	outputVoltage              *prometheus.GaugeVec // out1v/out2v
+	cloudDeviceTimestamp       prometheus.Gauge
+	wifiBTStatus               prometheus.Gauge
+	cloudBatteryPackSoC        *prometheus.GaugeVec // pe0/pe1/pe2
 	batteryPackChargeDirection *prometheus.GaugeVec // b0f/b1f/b2f
-	cloudReportSequence       prometheus.Gauge     // tn
-	cellVoltageSpread         *prometheus.GaugeVec // b{n}max - b{n}min
+	cloudReportSequence        prometheus.Gauge     // tn
+	cellVoltageSpread          *prometheus.GaugeVec // b{n}max - b{n}min
 
 	// puterrinfo positional header — kept for backward compat and firmware-drift detection
 	solarErrInfoHeaderValue *prometheus.GaugeVec
@@ -54,6 +54,9 @@ type Emulator struct {
 	// puterrinfo per-event metrics labelled with human-readable code names
 	solarErrInfoEventTotal  *prometheus.CounterVec
 	solarErrInfoLastEventTS *prometheus.GaugeVec
+	solarErrInfoWiFiRSSI    *prometheus.GaugeVec
+	solarErrInfoWiFiReason  *prometheus.CounterVec
+	solarErrInfoWiFiTimeout prometheus.Counter
 }
 
 type deviceInfoLabels struct {
@@ -83,7 +86,8 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		solarErrInfoHeaderValue,
 		solarErrInfoReportType, solarErrInfoSwVersion,
 		solarErrInfoField2, solarErrInfoField3, solarErrInfoField4, solarErrInfoField5,
-		solarErrInfoEventTotal, solarErrInfoLastEventTS := registerMetrics(reg, constLabels)
+		solarErrInfoEventTotal, solarErrInfoLastEventTS,
+		solarErrInfoWiFiRSSI, solarErrInfoWiFiReason, solarErrInfoWiFiTimeout := registerMetrics(reg, constLabels)
 
 	return &Emulator{
 		tz:                          tz,
@@ -103,8 +107,8 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		wifiBTStatus:                wifiBTStatus,
 		cloudBatteryPackSoC:         cloudBatteryPackSoC,
 		batteryPackChargeDirection:  batteryPackChargeDirection,
-		cloudReportSequence:        cloudReportSequence,
-		cellVoltageSpread:          cellVoltageSpread,
+		cloudReportSequence:         cloudReportSequence,
+		cellVoltageSpread:           cellVoltageSpread,
 		solarErrInfoHeaderValue:     solarErrInfoHeaderValue,
 		solarErrInfoReportType:      solarErrInfoReportType,
 		solarErrInfoSwVersion:       solarErrInfoSwVersion,
@@ -114,6 +118,9 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, tz *time.Locati
 		solarErrInfoField5:          solarErrInfoField5,
 		solarErrInfoEventTotal:      solarErrInfoEventTotal,
 		solarErrInfoLastEventTS:     solarErrInfoLastEventTS,
+		solarErrInfoWiFiRSSI:        solarErrInfoWiFiRSSI,
+		solarErrInfoWiFiReason:      solarErrInfoWiFiReason,
+		solarErrInfoWiFiTimeout:     solarErrInfoWiFiTimeout,
 	}
 }
 

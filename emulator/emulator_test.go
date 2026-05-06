@@ -76,7 +76,7 @@ func TestDateInfoZZOffset(t *testing.T) {
 		wantZZ string // two-digit expected value
 	}{
 		{"UTC", "00"},
-		{"Europe/Berlin", "02"}, // UTC+1 in winter / UTC+2 in summer; we check dynamic
+		{"Europe/Berlin", "02"},     // UTC+1 in winter / UTC+2 in summer; we check dynamic
 		{"America/Los_Angeles", ""}, // negative offset — just check it's not "00"
 	}
 
@@ -534,6 +534,41 @@ func TestUnknownEndpointRateLimit(t *testing.T) {
 	}
 }
 
+func TestLocalContainmentResponsesDoNotLeakVendorHosts(t *testing.T) {
+	em, _ := newTestEmulator(t, time.UTC)
+	h := em.Handler()
+
+	reqDate := httptest.NewRequest(http.MethodGet, "/app/neng/getDateInfoeu.php", nil)
+	rrDate := httptest.NewRecorder()
+	h.ServeHTTP(rrDate, reqDate)
+
+	reqReport := httptest.NewRequest(http.MethodGet, "/prod/api/v1/setB2500Report?v=DEADBEEF_not_real_ciphertext", nil)
+	rrReport := httptest.NewRecorder()
+	h.ServeHTTP(rrReport, reqReport)
+
+	reqErr := httptest.NewRequest(http.MethodPost, pathSolarErrInfo, strings.NewReader("uid:0:110:90:0:0:67:75.1.0,"))
+	rrErr := httptest.NewRecorder()
+	h.ServeHTTP(rrErr, reqErr)
+
+	for _, body := range []string{
+		rrDate.Body.String(),
+		rrReport.Body.String(),
+		rrErr.Body.String(),
+	} {
+		lower := strings.ToLower(body)
+		for _, forbidden := range []string{
+			"amazonaws.com",
+			"iot.",
+			"eu.hamedata.com",
+			"www.hamedata.com",
+		} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("response leaked forbidden host hint %q: %q", forbidden, body)
+			}
+		}
+	}
+}
+
 func TestSolarErrInfoHeaders(t *testing.T) {
 	em, _ := newTestEmulator(t, time.UTC)
 	h := em.Handler()
@@ -624,5 +659,5 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 	h.fn(r)
 	return nil
 }
-func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler  { return h }
-func (h *captureHandler) WithGroup(name string) slog.Handler        { return h }
+func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(name string) slog.Handler       { return h }
