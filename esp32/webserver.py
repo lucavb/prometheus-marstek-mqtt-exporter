@@ -144,6 +144,15 @@ async def api_mqtt_reset(req):
     return await _cmd(0x21)
 
 
+@app.post("/api/dod")
+async def api_set_dod(req):
+    body = req.json or {}
+    depth = body.get("depth")
+    if not isinstance(depth, int) or not (0 <= depth <= 100):
+        return _err("depth must be an integer 0-100", 400)
+    return await _cmd(0x0B, bytes([depth]))
+
+
 @app.post("/api/restart")
 async def api_restart(req):
     if not ble.connected:
@@ -207,6 +216,14 @@ _HTML = """\
 <button id="breset">Reset MQTT</button>
 <div id="rreset"></div>
 
+<h2>Depth of Discharge</h2>
+<p style="font-size:.85rem">Sets how deeply the battery discharges before stopping output (0–100&nbsp;%).</p>
+<form id="fdod">
+  <label>DoD (%)</label><input name="depth" type="number" min="0" max="100" value="80">
+  <button type="submit">Apply</button>
+</form>
+<div id="rdod"></div>
+
 <h2>Restart Battery</h2>
 <p style="font-size:.85rem">Triggers a full MCU reboot via BLE opcode 0x25.</p>
 <button class="danger" id="brestart">Restart Battery</button>
@@ -249,6 +266,12 @@ document.getElementById('fmqtt').onsubmit=async e=>{
     host:f.get('host'),port:parseInt(f.get('port')),
     ssl:f.get('ssl')==='on',user:f.get('user'),password:f.get('password')
   }));
+};
+
+document.getElementById('fdod').onsubmit=async e=>{
+  e.preventDefault();
+  const f=new FormData(e.target);
+  show('rdod', await post('/api/dod',{depth:parseInt(f.get('depth'))}));
 };
 
 document.getElementById('breset').onclick=async()=>{
