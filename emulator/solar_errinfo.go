@@ -396,6 +396,17 @@ func bodyToString(raw []byte) string {
 	return string(buf)
 }
 
+func int64SliceToCSV(values []int64) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, v := range values {
+		parts = append(parts, strconv.FormatInt(v, 10))
+	}
+	return strings.Join(parts, ",")
+}
+
 // handleSolarErrInfo handles POST /app/Solar/puterrinfo.php — a buffered
 // error/event log upload from the device. The real cloud always returns "_1"
 // regardless of body content.
@@ -459,7 +470,13 @@ func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("{code=%d(%s) b=%d c=%d d=%d value=%d}", q.Code, q.Name, q.SubB, q.SubC, q.SubD, q.Value))
 		}
 	}
+	eventsPreview := eventSummaries
+	if len(eventsPreview) > 12 {
+		eventsPreview = append(eventsPreview[:12], fmt.Sprintf("... (%d more events)", len(eventSummaries)-12))
+	}
 
+	// Keep info logs parse-friendly for downstream pipelines by avoiding nested
+	// array values, which some collectors truncate/mangle on very long lines.
 	attrs := []any{
 		"method", r.Method,
 		"path", r.URL.Path,
@@ -472,13 +489,13 @@ func (e *Emulator) handleSolarErrInfo(w http.ResponseWriter, r *http.Request) {
 		"uid", parsed.UID,
 		"report_type", parsed.ReportType,
 		"sw_version", parsed.ParsedHeader.SoftwareVersion,
-		"header", parsed.Header,
+		"header_csv", int64SliceToCSV(parsed.Header),
 		"events_count", len(parsed.Events) + len(parsed.Quintuples),
 		"events_oldest_ts", parsed.OldestTS,
 		"events_newest_ts", parsed.NewestTS,
-		"distinct_codes", parsed.DistinctCodes,
-		"distinct_values", parsed.DistinctValues,
-		"events", eventSummaries,
+		"distinct_codes", int64SliceToCSV(parsed.DistinctCodes),
+		"distinct_values", int64SliceToCSV(parsed.DistinctValues),
+		"events_preview", strings.Join(eventsPreview, " | "),
 	}
 	if len(parsed.ParseErrors) > 0 {
 		attrs = append(attrs, "parse_errors", parsed.ParseErrors)
