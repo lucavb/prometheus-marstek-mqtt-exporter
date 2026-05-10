@@ -29,6 +29,7 @@ type Config struct {
 
 	// ESP32 BLE bridge recovery (optional). Empty ESP32BaseURL disables it.
 	ESP32BaseURL             string
+	ESP32MetricsFallback     bool
 	ESP32CheckInterval       time.Duration
 	ESP32RecoveryMissedPolls int
 	ESP32MaxRecoveryAttempts int
@@ -78,6 +79,7 @@ func load(args []string, lookupEnv func(string) (string, bool), readFile func(st
 	logFormat := fs.String("log-format", env("MARSTEK_LOG_FORMAT", "text"), "Log format: text or json (env: MARSTEK_LOG_FORMAT)")
 	logSource := fs.Bool("log-source", envBool("MARSTEK_LOG_SOURCE", false), "Add source file/line to log records (env: MARSTEK_LOG_SOURCE)")
 	esp32BaseURL := fs.String("esp32-base-url", env("MARSTEK_ESP32_BASE_URL", ""), "Base URL for optional ESP32 BLE bridge recovery; empty = disabled (env: MARSTEK_ESP32_BASE_URL)")
+	esp32MetricsFallback := fs.Bool("esp32-metrics-fallback-enabled", envBool("MARSTEK_ESP32_METRICS_FALLBACK_ENABLED", false), "Enable ESP32 status endpoint fallback to refresh overlapping exporter gauges when MQTT telemetry is stale (env: MARSTEK_ESP32_METRICS_FALLBACK_ENABLED)")
 	esp32CheckIntervalSeconds := fs.Int("esp32-check-interval-seconds", envInt("MARSTEK_ESP32_CHECK_INTERVAL_SECONDS", 300), "How often to check ESP32 bridge status, in seconds (env: MARSTEK_ESP32_CHECK_INTERVAL_SECONDS)")
 	esp32RecoveryMissedPolls := fs.Int("esp32-recovery-missed-polls", envInt("MARSTEK_ESP32_RECOVERY_MISSED_POLLS", 3), "Consecutive missed MQTT polls before an early ESP32 status check (env: MARSTEK_ESP32_RECOVERY_MISSED_POLLS)")
 	esp32MaxRecoveryAttempts := fs.Int("esp32-max-recovery-attempts", envInt("MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS", 3), "Full ESP32 recovery attempts per continuous outage before human intervention is required (env: MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS)")
@@ -125,13 +127,13 @@ func load(args []string, lookupEnv func(string) (string, bool), readFile func(st
 		return nil, fmt.Errorf("invalid --esp32-max-recovery-attempts %d: must be positive", *esp32MaxRecoveryAttempts)
 	}
 	esp32Enabled := strings.TrimSpace(*esp32BaseURL) != ""
-	if esp32Enabled {
-		if strings.TrimSpace(*batteryWiFiSSID) == "" {
-			return nil, fmt.Errorf("--battery-wifi-ssid (or MARSTEK_BATTERY_WIFI_SSID) is required when ESP32 recovery is enabled")
-		}
-		if strings.TrimSpace(*batteryWiFiPassword) == "" {
-			return nil, fmt.Errorf("--battery-wifi-password (or MARSTEK_BATTERY_WIFI_PASSWORD) is required when ESP32 recovery is enabled")
-		}
+	wifiSSIDSet := strings.TrimSpace(*batteryWiFiSSID) != ""
+	wifiPasswordSet := strings.TrimSpace(*batteryWiFiPassword) != ""
+	if wifiSSIDSet != wifiPasswordSet {
+		return nil, fmt.Errorf("--battery-wifi-ssid and --battery-wifi-password (or MARSTEK_BATTERY_WIFI_SSID / MARSTEK_BATTERY_WIFI_PASSWORD) must be provided together")
+	}
+	if (wifiSSIDSet || *esp32MetricsFallback) && !esp32Enabled {
+		return nil, fmt.Errorf("--esp32-base-url (or MARSTEK_ESP32_BASE_URL) is required when ESP32 bridge features are enabled")
 	}
 
 	// File overrides inline password value (docker/k8s secret pattern).
@@ -188,6 +190,7 @@ func load(args []string, lookupEnv func(string) (string, bool), readFile func(st
 	cfg.LogFormat = strings.ToLower(*logFormat)
 	cfg.LogSource = *logSource
 	cfg.ESP32BaseURL = strings.TrimRight(strings.TrimSpace(*esp32BaseURL), "/")
+	cfg.ESP32MetricsFallback = *esp32MetricsFallback
 	cfg.ESP32CheckInterval = time.Duration(*esp32CheckIntervalSeconds) * time.Second
 	cfg.ESP32RecoveryMissedPolls = *esp32RecoveryMissedPolls
 	cfg.ESP32MaxRecoveryAttempts = *esp32MaxRecoveryAttempts
@@ -265,6 +268,7 @@ func LogConfig(cfg *Config) {
 		"log_format", cfg.LogFormat,
 		"log_source", cfg.LogSource,
 		"esp32_base_url", cfg.ESP32BaseURL,
+		"esp32_metrics_fallback", cfg.ESP32MetricsFallback,
 		"esp32_check_interval", cfg.ESP32CheckInterval.String(),
 		"esp32_recovery_missed_polls", cfg.ESP32RecoveryMissedPolls,
 		"esp32_max_recovery_attempts", cfg.ESP32MaxRecoveryAttempts,

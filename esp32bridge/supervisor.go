@@ -120,6 +120,10 @@ func (s *Supervisor) Check(ctx context.Context) error {
 		slog.Warn("ESP32 bridge reports battery MQTT disconnected; no automatic remediation configured")
 		return nil
 	}
+	if !s.hasWiFiProvisioningConfig() {
+		slog.Warn("ESP32 bridge reports battery WiFi disconnected but automatic recovery is disabled because battery WiFi credentials are not configured")
+		return nil
+	}
 	if !s.recoveryAllowed() {
 		slog.Info("ESP32 bridge reports battery WiFi disconnected during cold start; waiting for first successful MQTT response before remediation")
 		return nil
@@ -243,4 +247,8 @@ func (s *Supervisor) resetAttempts() {
 	s.recoveryAttempts = 0
 	s.manualIntervention = false
 	s.cfg.Metrics.SetManualInterventionRequired(false)
+}
+
+func (s *Supervisor) hasWiFiProvisioningConfig() bool {
+	return s.cfg.WiFi.SSID != "" && s.cfg.WiFi.Password != ""
 }

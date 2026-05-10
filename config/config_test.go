@@ -34,6 +34,9 @@ func TestESP32RecoveryDefaultsDisabled(t *testing.T) {
 	if cfg.ESP32BaseURL != "" {
 		t.Fatalf("ESP32 recovery should default to disabled, got %q", cfg.ESP32BaseURL)
 	}
+	if cfg.ESP32MetricsFallback {
+		t.Fatal("ESP32 metrics fallback should default to disabled")
+	}
 	if cfg.ESP32CheckInterval != 300*time.Second {
 		t.Fatalf("ESP32 check interval = %s, want 300s", cfg.ESP32CheckInterval)
 	}
@@ -45,17 +48,46 @@ func TestESP32RecoveryDefaultsDisabled(t *testing.T) {
 	}
 }
 
-func TestESP32RecoveryRequiresWiFiConfigWhenEnabled(t *testing.T) {
-	_, err := testLoad(t, nil, map[string]string{
+func TestESP32BaseURLDoesNotRequireWiFiProvisioning(t *testing.T) {
+	cfg, err := testLoad(t, nil, map[string]string{
 		"MARSTEK_MQTT_HOST":      "mqtt.local",
 		"MARSTEK_DEVICE_ID":      "battery-1",
 		"MARSTEK_ESP32_BASE_URL": "http://esp32.local",
 	})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.BatteryWiFiSSID != "" || cfg.BatteryWiFiPassword != "" {
+		t.Fatalf("expected wifi credentials to be optional, got ssid=%q", cfg.BatteryWiFiSSID)
+	}
+}
+
+func TestESP32WiFiProvisioningRequiresBothFields(t *testing.T) {
+	_, err := testLoad(t, nil, map[string]string{
+		"MARSTEK_MQTT_HOST":         "mqtt.local",
+		"MARSTEK_DEVICE_ID":         "battery-1",
+		"MARSTEK_ESP32_BASE_URL":    "http://esp32.local",
+		"MARSTEK_BATTERY_WIFI_SSID": "iot",
+	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "battery-wifi-ssid") {
-		t.Fatalf("error = %q, want missing wifi ssid", err)
+	if !strings.Contains(err.Error(), "must be provided together") {
+		t.Fatalf("error = %q, want paired wifi credential validation", err)
+	}
+}
+
+func TestESP32MetricsFallbackRequiresBaseURL(t *testing.T) {
+	_, err := testLoad(t, nil, map[string]string{
+		"MARSTEK_MQTT_HOST":                      "mqtt.local",
+		"MARSTEK_DEVICE_ID":                      "battery-1",
+		"MARSTEK_ESP32_METRICS_FALLBACK_ENABLED": "true",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "esp32-base-url") {
+		t.Fatalf("error = %q, want missing base url validation", err)
 	}
 }
 
@@ -74,17 +106,18 @@ func TestESP32CheckIntervalSecondsMustBePositive(t *testing.T) {
 
 func TestESP32RecoveryConfig(t *testing.T) {
 	cfg, err := testLoad(t, nil, map[string]string{
-		"MARSTEK_MQTT_HOST":                    "mqtt.local",
-		"MARSTEK_MQTT_PORT":                    "1884",
-		"MARSTEK_MQTT_USERNAME":                "mqtt-user",
-		"MARSTEK_MQTT_PASSWORD":                "mqtt-pass",
-		"MARSTEK_DEVICE_ID":                    "battery-1",
-		"MARSTEK_ESP32_BASE_URL":               "http://esp32.local/",
-		"MARSTEK_ESP32_CHECK_INTERVAL_SECONDS": "60",
-		"MARSTEK_ESP32_RECOVERY_MISSED_POLLS":  "4",
-		"MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS":  "2",
-		"MARSTEK_BATTERY_WIFI_SSID":            "iot",
-		"MARSTEK_BATTERY_WIFI_PASSWORD":        "secret",
+		"MARSTEK_MQTT_HOST":                      "mqtt.local",
+		"MARSTEK_MQTT_PORT":                      "1884",
+		"MARSTEK_MQTT_USERNAME":                  "mqtt-user",
+		"MARSTEK_MQTT_PASSWORD":                  "mqtt-pass",
+		"MARSTEK_DEVICE_ID":                      "battery-1",
+		"MARSTEK_ESP32_BASE_URL":                 "http://esp32.local/",
+		"MARSTEK_ESP32_METRICS_FALLBACK_ENABLED": "true",
+		"MARSTEK_ESP32_CHECK_INTERVAL_SECONDS":   "60",
+		"MARSTEK_ESP32_RECOVERY_MISSED_POLLS":    "4",
+		"MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS":    "2",
+		"MARSTEK_BATTERY_WIFI_SSID":              "iot",
+		"MARSTEK_BATTERY_WIFI_PASSWORD":          "secret",
 	})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -92,6 +125,9 @@ func TestESP32RecoveryConfig(t *testing.T) {
 
 	if cfg.ESP32BaseURL != "http://esp32.local" {
 		t.Fatalf("ESP32 base URL = %q", cfg.ESP32BaseURL)
+	}
+	if !cfg.ESP32MetricsFallback {
+		t.Fatal("expected ESP32 metrics fallback to be enabled")
 	}
 	if cfg.ESP32CheckInterval != time.Minute {
 		t.Fatalf("ESP32 check interval = %s, want 1m", cfg.ESP32CheckInterval)

@@ -13,7 +13,25 @@ func TestClientStatus(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/status" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"connected":true,"wifi_connected":true,"mqtt_connected":false}`))
+		_, _ = w.Write([]byte(`{
+			"connected": true,
+			"wifi_connected": true,
+			"mqtt_connected": false,
+			"soc_percent": 67.5,
+			"remaining_capacity_wh": 1280,
+			"dod": 80,
+			"in1_power_w": 310,
+			"in2_power_w": 205,
+			"out1_power_w": 450,
+			"out2_power_w": 325,
+			"out1_enable": true,
+			"out2_enable": false,
+			"temperature_low_c": 24,
+			"temperature_high_c": 31,
+			"daily_charge_wh": 2500,
+			"daily_discharge_wh": 2100,
+			"daily_load_wh": 4100
+		}`))
 	}))
 	defer server.Close()
 
@@ -23,6 +41,15 @@ func TestClientStatus(t *testing.T) {
 	}
 	if !status.Connected || !status.WiFiConnected || status.MQTTConnected {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+	if !status.HasRuntimeTelemetry() {
+		t.Fatal("expected runtime telemetry fields to be available")
+	}
+	if status.SOCPercent == nil || *status.SOCPercent != 67.5 {
+		t.Fatalf("unexpected soc: %+v", status.SOCPercent)
+	}
+	if status.Out2Enabled == nil || *status.Out2Enabled {
+		t.Fatalf("unexpected out2 enabled state: %+v", status.Out2Enabled)
 	}
 }
 

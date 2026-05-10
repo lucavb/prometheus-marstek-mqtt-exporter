@@ -43,7 +43,7 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_poll_publish_errors_total`     |                     | Polls that failed before the MQTT publish completed |
 
 
-### ESP32 recovery metrics (only present when `MARSTEK_ESP32_BASE_URL` is set)
+### ESP32 bridge metrics (only present when `MARSTEK_ESP32_BASE_URL` is set)
 
 | Metric                                                     | Labels | Description                                                                      |
 | ---------------------------------------------------------- | ------ | -------------------------------------------------------------------------------- |
@@ -56,6 +56,7 @@ All metrics carry the labels `device_type` and `device_id`.
 | `marstek_esp32_recovery_failures_total`                    |        | Total number of ESP32 bridge recovery attempts that failed                       |
 | `marstek_esp32_recovery_manual_intervention_required`      |        | 1 if automatic ESP32 recovery is exhausted and human intervention is required    |
 | `marstek_esp32_last_recovery_timestamp_seconds`            |        | Unix timestamp of the last successful ESP32 bridge recovery                      |
+| `marstek_esp32_fallback_updates_total`                     |        | Number of times exporter gauges were refreshed from ESP32 `/api/status` fallback telemetry |
 
 
 ### Cloud emulator metrics (only present when `MARSTEK_EMULATOR_LISTEN_ADDR` is set)
@@ -151,11 +152,12 @@ Configuration is loaded in order of precedence: **defaults → environment varia
 | `MARSTEK_LOG_FORMAT`           | `--log-format`           | `text`       | Log format: `text` or `json` (Docker image defaults to `json`)                      |
 | `MARSTEK_LOG_SOURCE`           | `--log-source`           | `false`      | Add source file/line to log records                                                 |
 | `MARSTEK_ESP32_BASE_URL`       | `--esp32-base-url`       | `""`         | Base URL for the optional ESP32 BLE bridge; empty = disabled                        |
+| `MARSTEK_ESP32_METRICS_FALLBACK_ENABLED` | `--esp32-metrics-fallback-enabled` | `false` | Enable opt-in ESP32 `/api/status` fallback to refresh overlapping gauges after MQTT timeout |
 | `MARSTEK_ESP32_CHECK_INTERVAL_SECONDS` | `--esp32-check-interval-seconds` | `300` | How often to check ESP32 `/api/status`, in seconds                                  |
 | `MARSTEK_ESP32_RECOVERY_MISSED_POLLS` | `--esp32-recovery-missed-polls` | `3` | Consecutive missed MQTT polls before an early ESP32 status check                    |
 | `MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS` | `--esp32-max-recovery-attempts` | `3` | Full Wi-Fi reprovision attempts per continuous outage before human intervention     |
-| `MARSTEK_BATTERY_WIFI_SSID`    | `--battery-wifi-ssid`    | `""`         | Battery WiFi SSID to provision through the ESP32 bridge; required when enabled      |
-| `MARSTEK_BATTERY_WIFI_PASSWORD` | `--battery-wifi-password` | `""`        | Battery WiFi password to provision through the ESP32 bridge; required when enabled  |
+| `MARSTEK_BATTERY_WIFI_SSID`    | `--battery-wifi-ssid`    | `""`         | Battery WiFi SSID for ESP32-initiated reprovisioning; must be set together with password |
+| `MARSTEK_BATTERY_WIFI_PASSWORD` | `--battery-wifi-password` | `""`        | Battery WiFi password for ESP32-initiated reprovisioning; must be set together with SSID |
 | `MARSTEK_EMULATOR_LISTEN_ADDR` | `--emulator-listen-addr` | `""`         | Listen address for the cloud emulator; **empty = disabled**                         |
 | `MARSTEK_EMULATOR_TZ`          | `--emulator-tz`          | `""`         | Timezone for the time-sync response (e.g. `Europe/Berlin`); empty = system timezone |
 
@@ -197,7 +199,9 @@ scrape_configs:
 
 ## Optional ESP32 recovery
 
-The `esp32/` side deployment runs a small MicroPython HTTP bridge that talks BLE to the battery. When `MARSTEK_ESP32_BASE_URL` is set, the exporter uses that bridge to observe connectivity and push Wi-Fi settings while the exporter keeps the recovery policy and MQTT liveness logic.
+The `esp32/` side deployment runs a small MicroPython HTTP bridge that talks BLE to the battery. When `MARSTEK_ESP32_BASE_URL` is set, the exporter uses that bridge to observe connectivity while keeping MQTT as the primary telemetry source.
+
+If `MARSTEK_BATTERY_WIFI_SSID` and `MARSTEK_BATTERY_WIFI_PASSWORD` are both set, the exporter is also allowed to push Wi-Fi settings through the bridge for automatic remediation. If those credentials are omitted, status checks still run, but remediation is intentionally skipped.
 
 The exporter checks `GET /api/status` every `MARSTEK_ESP32_CHECK_INTERVAL_SECONDS` seconds, defaulting to 300 seconds. It also checks sooner after `MARSTEK_ESP32_RECOVERY_MISSED_POLLS` consecutive MQTT polls receive no battery response, but only after the exporter has already seen at least one successful MQTT response from the battery. If the ESP32 reports `wifi_connected=false`, the exporter runs this sequence:
 
@@ -205,6 +209,12 @@ The exporter checks `GET /api/status` every `MARSTEK_ESP32_CHECK_INTERVAL_SECOND
 2. Poll `/api/status` until `wifi_connected=true`
 
 Only one recovery can run at a time. A continuous outage gets at most `MARSTEK_ESP32_MAX_RECOVERY_ATTEMPTS` full recovery attempts, defaulting to 3; after that the exporter logs that human intervention is required. A later healthy ESP32 status resets the attempt counter. If the bridge reports `mqtt_connected=false` while Wi-Fi is still connected, the exporter records the status but does not try to reconfigure MQTT automatically.
+
+### Optional ESP32 metrics fallback (opt-in)
+
+Set `MARSTEK_ESP32_METRICS_FALLBACK_ENABLED=true` to let the exporter call `GET /api/status` after an MQTT poll timeout with no fresh telemetry. When fallback data is available, overlapping gauges (SoC, remaining Wh, in/out power, output enable, temperatures, and selected daily energy counters) are refreshed from ESP32 BLE telemetry to reduce dashboard gaps.
+
+`marstek_up` still reflects MQTT telemetry health; it remains `0` during MQTT outages even when fallback-filled gauges are present. Use `marstek_esp32_fallback_updates_total` to track how often fallback was applied.
 
 ## Cloud emulator (optional)
 

@@ -17,6 +17,14 @@ type cachedMetric struct {
 	labelValues []string // nil for scalar gauges
 }
 
+// MetricValue is a normalized gauge sample for cache updates.
+// Name must match one of the collector's known metric suffixes.
+type MetricValue struct {
+	Name   string
+	Value  float64
+	Labels []string
+}
+
 // Collector implements prometheus.Collector. It caches the last device payload
 // and emits gauge metrics only while the cache is fresh (age <= ttl). The meta
 // metrics (up, last_update_timestamp_seconds, last_payload_timestamp_seconds,
@@ -57,6 +65,7 @@ type Collector struct {
 	scrapeErrorsTotal      prometheus.Counter
 	pollTimeoutsTotal      prometheus.Counter
 	pollPublishErrorsTotal prometheus.Counter
+	esp32FallbackUpdates   prometheus.Counter
 }
 
 func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Duration) *Collector {
@@ -141,6 +150,11 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 		Help:        "Number of cd=1 polls that failed before publish completed",
 		ConstLabels: constLabels,
 	})
+	esp32FallbackUpdates := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        prometheus.BuildFQName(namespace, "esp32", "fallback_updates_total"),
+		Help:        "Number of times exporter gauges were refreshed from ESP32 bridge status fallback data",
+		ConstLabels: constLabels,
+	})
 
 	c := &Collector{
 		ttl:                    ttl,
@@ -155,10 +169,11 @@ func New(reg prometheus.Registerer, deviceType, deviceID string, ttl time.Durati
 		scrapeErrorsTotal:      scrapeErrorsTotal,
 		pollTimeoutsTotal:      pollTimeoutsTotal,
 		pollPublishErrorsTotal: pollPublishErrorsTotal,
+		esp32FallbackUpdates:   esp32FallbackUpdates,
 	}
 
 	// Register the custom collector and the direct-instrumentation counters.
-	reg.MustRegister(c, scrapesTotal, scrapeErrorsTotal, pollTimeoutsTotal, pollPublishErrorsTotal)
+	reg.MustRegister(c, scrapesTotal, scrapeErrorsTotal, pollTimeoutsTotal, pollPublishErrorsTotal, esp32FallbackUpdates)
 	return c
 }
 
@@ -206,14 +221,10 @@ func (c *Collector) Update(payload string) bool {
 		return false
 	}
 
-	var metrics []cachedMetric
+	var metrics []MetricValue
 
 	add := func(name string, v float64, labels ...string) {
-		d, ok := c.gaugeDescMap[name]
-		if !ok {
-			return
-		}
-		metrics = append(metrics, cachedMetric{desc: d, value: v, labelValues: labels})
+		metrics = append(metrics, MetricValue{Name: name, Value: v, Labels: labels})
 	}
 
 	setIfPresent := func(name, key string) {
@@ -293,13 +304,43 @@ func (c *Collector) Update(payload string) bool {
 		}
 	}
 
+	ok := c.UpdateMetrics(metrics)
+	if ok {
+		slog.Debug("metrics updated from payload", "fields_parsed", len(m), "metrics_cached", len(metrics))
+	}
+	return ok
+}
+
+// UpdateMetrics rebuilds the collector cache from normalized metric values and
+// marks the payload as fresh when at least one known metric is provided.
+func (c *Collector) UpdateMetrics(values []MetricValue) bool {
+	if len(values) == 0 {
+		return false
+	}
+
+	metrics := make([]cachedMetric, 0, len(values))
+	for _, v := range values {
+		d, ok := c.gaugeDescMap[v.Name]
+		if !ok {
+			continue
+		}
+		metrics = append(metrics, cachedMetric{
+			desc:        d,
+			value:       v.Value,
+			labelValues: append([]string(nil), v.Labels...),
+		})
+	}
+	if len(metrics) == 0 {
+		slog.Warn("ignored metric update with no known metric names", "samples", len(values))
+		return false
+	}
+
+	now := c.nowFn()
 	c.mu.Lock()
 	c.cached = metrics
-	c.lastUpdateAt = c.nowFn()
-	c.lastPayloadUnix = float64(c.lastUpdateAt.Unix())
+	c.lastUpdateAt = now
+	c.lastPayloadUnix = float64(now.Unix())
 	c.mu.Unlock()
-
-	slog.Debug("metrics updated from payload", "fields_parsed", len(m))
 	return true
 }
 
@@ -329,6 +370,10 @@ func (c *Collector) IncPollTimeout() {
 func (c *Collector) IncPollPublishError() {
 	c.scrapeErrorsTotal.Inc()
 	c.pollPublishErrorsTotal.Inc()
+}
+
+func (c *Collector) IncESP32FallbackUpdate() {
+	c.esp32FallbackUpdates.Inc()
 }
 
 func (c *Collector) HasFreshPayload(maxAge time.Duration) bool {

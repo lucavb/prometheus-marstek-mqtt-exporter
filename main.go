@@ -31,6 +31,10 @@ type poller interface {
 	Poll() error
 }
 
+type esp32StatusProvider interface {
+	Status(context.Context) (esp32bridge.Status, error)
+}
+
 type recoverySupervisor interface {
 	EnableRecovery()
 	TriggerCheck()
@@ -65,9 +69,10 @@ func main() {
 		return
 	}
 
+	var bridge *esp32bridge.Client
 	var supervisor *esp32bridge.Supervisor
 	if cfg.ESP32BaseURL != "" {
-		bridge := esp32bridge.New(cfg.ESP32BaseURL)
+		bridge = esp32bridge.New(cfg.ESP32BaseURL)
 		metrics := esp32bridge.NewMetrics(reg, cfg.DeviceType, cfg.DeviceID)
 		supervisor = esp32bridge.NewSupervisor(bridge, esp32bridge.SupervisorConfig{
 			CheckInterval:       cfg.ESP32CheckInterval,
@@ -82,7 +87,7 @@ func main() {
 		slog.Info("ESP32 recovery supervisor started", "base_url", cfg.ESP32BaseURL, "check_interval", cfg.ESP32CheckInterval.String())
 	}
 
-	go runPollLoop(ctx, client, coll, cfg.PollInterval, cfg.ResponseTimeout, cfg.ESP32RecoveryMissedPolls, supervisor, responseCh)
+	go runPollLoop(ctx, client, coll, cfg.PollInterval, cfg.ResponseTimeout, cfg.ESP32RecoveryMissedPolls, supervisor, responseCh, bridge, cfg.ESP32MetricsFallback)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
@@ -143,7 +148,17 @@ func main() {
 	}
 }
 
-func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, interval, timeout time.Duration, recoveryMissedPolls int, supervisor recoverySupervisor, responseCh <-chan struct{}) {
+func runPollLoop(
+	ctx context.Context,
+	client poller,
+	coll *collector.Collector,
+	interval, timeout time.Duration,
+	recoveryMissedPolls int,
+	supervisor recoverySupervisor,
+	responseCh <-chan struct{},
+	esp32 esp32StatusProvider,
+	esp32MetricsFallbackEnabled bool,
+) {
 	// Drain any stale signal before the first poll.
 	select {
 	case <-responseCh:
@@ -166,7 +181,7 @@ func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, 
 		}
 	}
 
-	result, err := runPoll(ctx, client, coll, timeout, freshTelemetryWindow, responseCh)
+	result, err := runPoll(ctx, client, coll, timeout, freshTelemetryWindow, responseCh, esp32, esp32MetricsFallbackEnabled)
 	if err != nil {
 		return
 	}
@@ -177,7 +192,7 @@ func runPollLoop(ctx context.Context, client poller, coll *collector.Collector, 
 	for {
 		select {
 		case <-ticker.C:
-			result, err := runPoll(ctx, client, coll, timeout, freshTelemetryWindow, responseCh)
+			result, err := runPoll(ctx, client, coll, timeout, freshTelemetryWindow, responseCh, esp32, esp32MetricsFallbackEnabled)
 			if err != nil {
 				return
 			}
@@ -219,7 +234,15 @@ func handleDevicePayload(coll *collector.Collector, responseCh chan<- struct{}, 
 // runPoll sends one cd=1 poll and waits for either an in-window response or a
 // timeout, after which it falls back to recent telemetry freshness.
 // Returns a non-nil error only when ctx is cancelled, which signals the caller to stop.
-func runPoll(ctx context.Context, client poller, coll *collector.Collector, timeout, freshTelemetryWindow time.Duration, responseCh <-chan struct{}) (pollResult, error) {
+func runPoll(
+	ctx context.Context,
+	client poller,
+	coll *collector.Collector,
+	timeout, freshTelemetryWindow time.Duration,
+	responseCh <-chan struct{},
+	esp32 esp32StatusProvider,
+	esp32MetricsFallbackEnabled bool,
+) (pollResult, error) {
 	// Drain any stale response from the previous round.
 	select {
 	case <-responseCh:
@@ -245,6 +268,14 @@ func runPoll(ctx context.Context, client poller, coll *collector.Collector, time
 			slog.Debug("poll deadline passed but recent telemetry is still fresh", "fresh_telemetry_window", freshTelemetryWindow)
 			return pollFreshTelemetry, nil
 		}
+		if esp32MetricsFallbackEnabled && esp32 != nil {
+			if fallbackApplied, err := applyESP32MetricsFallback(ctx, esp32, coll); err != nil {
+				slog.Warn("ESP32 metrics fallback failed", "error", err)
+			} else if fallbackApplied {
+				coll.IncESP32FallbackUpdate()
+				slog.Warn("poll timed out; refreshed gauges from ESP32 status fallback")
+			}
+		}
 		slog.Warn("poll timed out and no recent device telemetry was available", "timeout", timeout, "fresh_telemetry_window", freshTelemetryWindow)
 		coll.IncPollTimeout()
 		coll.MarkDown()
@@ -252,4 +283,62 @@ func runPoll(ctx context.Context, client poller, coll *collector.Collector, time
 	case <-ctx.Done():
 		return pollTimedOut, ctx.Err()
 	}
+}
+
+func applyESP32MetricsFallback(ctx context.Context, esp32 esp32StatusProvider, coll *collector.Collector) (bool, error) {
+	status, err := esp32.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !status.Connected {
+		return false, nil
+	}
+
+	values := metricValuesFromESP32Status(status)
+	if len(values) == 0 {
+		return false, nil
+	}
+	return coll.UpdateMetrics(values), nil
+}
+
+func metricValuesFromESP32Status(status esp32bridge.Status) []collector.MetricValue {
+	values := make([]collector.MetricValue, 0, 12)
+	add := func(name string, value float64, labels ...string) {
+		values = append(values, collector.MetricValue{Name: name, Value: value, Labels: labels})
+	}
+	addIfFloat := func(name string, value *float64, labels ...string) {
+		if value != nil {
+			add(name, *value, labels...)
+		}
+	}
+	addIfBool := func(name string, value *bool, labels ...string) {
+		if value == nil {
+			return
+		}
+		if *value {
+			add(name, 1, labels...)
+		} else {
+			add(name, 0, labels...)
+		}
+	}
+
+	addIfFloat("battery_soc_percent", status.SOCPercent)
+	addIfFloat("battery_pack_soc_percent", status.SOCPercent, "0")
+	addIfFloat("battery_remaining_wh", status.RemainingCapacityWh)
+	addIfFloat("battery_dod_percent", status.DoDPercent)
+	addIfFloat("solar_input_watts", status.In1PowerWatts, "1")
+	addIfFloat("solar_input_watts", status.In2PowerWatts, "2")
+	addIfFloat("output_watts", status.Out1PowerWatts, "1")
+	addIfFloat("output_watts", status.Out2PowerWatts, "2")
+	addIfBool("output_enabled", status.Out1Enabled, "1")
+	addIfBool("output_enabled", status.Out2Enabled, "2")
+	addIfFloat("temperature_celsius", status.TemperatureLowC, "min")
+	addIfFloat("temperature_celsius", status.TemperatureHighC, "max")
+	addIfFloat("daily_battery_charge_wh", status.DailyChargeWh)
+	addIfFloat("daily_battery_discharge_wh", status.DailyDischargeWh)
+	// /api/status only exposes one daily load energy value; map it to the
+	// charge-side gauge to keep a single comparable daily-load trend.
+	addIfFloat("daily_load_charge_wh", status.DailyLoadWh)
+
+	return values
 }

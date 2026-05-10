@@ -100,6 +100,25 @@ func TestSupervisorIgnoresMQTTOnlyDisconnect(t *testing.T) {
 	}
 }
 
+func TestSupervisorSkipsRecoveryWithoutWiFiProvisioningConfig(t *testing.T) {
+	bridge := &fakeBridge{statuses: []Status{
+		{Connected: true, WiFiConnected: false, MQTTConnected: false},
+	}}
+	supervisor := NewSupervisor(bridge, SupervisorConfig{
+		MaxRecoveryAttempts: 3,
+		WaitTimeout:         50 * time.Millisecond,
+		PollPeriod:          time.Millisecond,
+	})
+	supervisor.EnableRecovery()
+
+	if err := supervisor.Check(context.Background()); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if got := bridge.eventCount("wifi"); got != 0 {
+		t.Fatalf("wifi count = %d, want 0 without WiFi provisioning config", got)
+	}
+}
+
 func TestSupervisorSkipsColdStartRecoveryUntilEnabled(t *testing.T) {
 	bridge := &fakeBridge{
 		statuses: []Status{
@@ -110,6 +129,7 @@ func TestSupervisorSkipsColdStartRecoveryUntilEnabled(t *testing.T) {
 	}
 	supervisor := NewSupervisor(bridge, SupervisorConfig{
 		MaxRecoveryAttempts: 3,
+		WiFi:                WiFiConfig{SSID: "iot", Password: "wifi-pass"},
 		WaitTimeout:         50 * time.Millisecond,
 		PollPeriod:          time.Millisecond,
 	})
@@ -139,6 +159,7 @@ func TestSupervisorStopsAfterMaxRecoveryAttempts(t *testing.T) {
 	}
 	supervisor := NewSupervisor(bridge, SupervisorConfig{
 		MaxRecoveryAttempts: 3,
+		WiFi:                WiFiConfig{SSID: "iot", Password: "wifi-pass"},
 		WaitTimeout:         50 * time.Millisecond,
 		PollPeriod:          time.Millisecond,
 	})
@@ -160,6 +181,7 @@ func TestSupervisorHealthyStatusResetsRecoveryAttempts(t *testing.T) {
 	}}
 	supervisor := NewSupervisor(bridge, SupervisorConfig{
 		MaxRecoveryAttempts: 1,
+		WiFi:                WiFiConfig{SSID: "iot", Password: "wifi-pass"},
 		WaitTimeout:         50 * time.Millisecond,
 		PollPeriod:          time.Millisecond,
 	})
@@ -236,6 +258,7 @@ func TestSupervisorRecordsManualInterventionMetrics(t *testing.T) {
 	}
 	supervisor := NewSupervisor(bridge, SupervisorConfig{
 		MaxRecoveryAttempts: 1,
+		WiFi:                WiFiConfig{SSID: "iot", Password: "wifi-pass"},
 		WaitTimeout:         50 * time.Millisecond,
 		PollPeriod:          time.Millisecond,
 		Metrics:             metrics,

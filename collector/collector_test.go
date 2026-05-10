@@ -223,6 +223,15 @@ marstek_poll_publish_errors_total{device_id="test-device",device_type="HMJ-2"} 0
 	}
 
 	expected = `
+# HELP marstek_esp32_fallback_updates_total Number of times exporter gauges were refreshed from ESP32 bridge status fallback data
+# TYPE marstek_esp32_fallback_updates_total counter
+marstek_esp32_fallback_updates_total{device_id="test-device",device_type="HMJ-2"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_esp32_fallback_updates_total"); err != nil {
+		t.Errorf("marstek_esp32_fallback_updates_total should be present at cold start: %v", err)
+	}
+
+	expected = `
 # HELP marstek_payload_fresh 1 if the last successfully parsed device payload is still within metric_ttl, 0 otherwise
 # TYPE marstek_payload_fresh gauge
 marstek_payload_fresh{device_id="test-device",device_type="HMJ-2"} 0
@@ -241,6 +250,31 @@ marstek_payload_fresh{device_id="test-device",device_type="HMJ-2"} 0
 		if name == "marstek_battery_soc_percent" || name == "marstek_solar_input_watts" {
 			t.Errorf("device gauge %q should not be present before first Update()", name)
 		}
+	}
+}
+
+func TestUpdateMetricsStructuredSnapshot(t *testing.T) {
+	fixedNow := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	c, reg := newTestCollector(5*time.Minute, func() time.Time { return fixedNow })
+
+	ok := c.UpdateMetrics([]MetricValue{
+		{Name: "battery_soc_percent", Value: 55},
+		{Name: "battery_remaining_wh", Value: 1200},
+		{Name: "solar_input_watts", Value: 101, Labels: []string{"1"}},
+		{Name: "solar_input_watts", Value: 99, Labels: []string{"2"}},
+		{Name: "output_enabled", Value: 1, Labels: []string{"1"}},
+	})
+	if !ok {
+		t.Fatal("expected structured metric snapshot to be accepted")
+	}
+
+	expected := `
+# HELP marstek_battery_soc_percent State of charge in percent
+# TYPE marstek_battery_soc_percent gauge
+marstek_battery_soc_percent{device_id="test-device",device_type="HMJ-2"} 55
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "marstek_battery_soc_percent"); err != nil {
+		t.Fatalf("structured update should set battery_soc_percent: %v", err)
 	}
 }
 
