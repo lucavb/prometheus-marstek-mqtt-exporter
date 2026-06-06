@@ -106,6 +106,7 @@ except: pass" \
         + cp microdot.py :microdot.py \
         + cp marstek_ble.py :marstek_ble.py \
         + cp webserver.py :webserver.py \
+        + cp boot.py :boot.py \
         + cp main.py :main.py \
         + cp config.json :config.json \
         + reset; then
@@ -120,5 +121,7 @@ except: pass" \
 done
 
 echo ""
-echo "Done. Watch serial output with:"
+echo "Done. Device reset and running main.py."
+echo "Note: opening a REPL (mpremote repl) stops the web server until the next reset."
+echo "Watch serial output with:"
 echo "  uv run --with mpremote mpremote connect $DEVICE repl"
