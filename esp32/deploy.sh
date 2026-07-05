@@ -105,6 +105,7 @@ except: pass" \
         + cp aioble/server.py :aioble/server.py \
         + cp microdot.py :microdot.py \
         + cp marstek_ble.py :marstek_ble.py \
+        + cp logbuf.py :logbuf.py \
         + cp webserver.py :webserver.py \
         + cp boot.py :boot.py \
         + cp main.py :main.py \

@@ -9,3 +9,10 @@ try:
     esp.osdebug(None)
 except ImportError:
     pass
+
+try:
+    import bluetooth
+
+    bluetooth.BLE().config(rxbuf=512)
+except Exception:
+    pass

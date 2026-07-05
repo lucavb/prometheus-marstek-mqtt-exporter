@@ -1,6 +1,7 @@
 """HTTP server for the Marstek BLE bridge — microdot 2.x."""
 import struct
 import ujson
+import logbuf
 import marstek_ble as ble
 from microdot import Microdot, Response
 
@@ -115,6 +116,7 @@ def _err(msg: str, status: int = 503, code: str | None = None, hint: str | None 
 
 
 async def _cmd(opcode: int, payload: bytes = b"", opname: str = "command"):
+    logbuf.log("HTTP", opname)
     if not ble.connected:
         return _err(
             "not connected",
@@ -338,6 +340,7 @@ async def api_set_dod(req):
 
 @app.post("/api/restart")
 async def api_restart(req):
+    logbuf.log("HTTP", "restart battery")
     if not ble.connected:
         return _err("not connected")
     await ble.send_command(0x25, b"\x01")
@@ -350,6 +353,7 @@ async def api_restart(req):
 
 @app.post("/api/factory-reset")
 async def api_factory_reset(req):
+    logbuf.log("HTTP", "factory reset")
     if not ble.connected:
         return _err("not connected")
     await ble.send_command(0x26, b"\x01")
@@ -362,12 +366,27 @@ async def api_factory_reset(req):
 
 @app.post("/api/hardware-reset")
 async def api_hardware_reset(req):
+    logbuf.log("HTTP", "hardware reset")
     if not ble.connected:
         return _err("not connected")
     ok = await ble.send_ff06_reset()
     if not ok:
         return _err("hardware reset failed — FF06 characteristic unavailable", 502)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Live logs (ephemeral ring buffer)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/logs")
+async def api_logs(req):
+    since = int(req.args.get("since", "0"))
+    wait_s = min(int(req.args.get("wait", "0")), 10)
+    if wait_s > 0:
+        await logbuf.wait_new(since, wait_s * 1000)
+    entries, next_seq = logbuf.get_since(since)
+    return {"entries": entries, "next": next_seq}
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +583,23 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .toast.er{background:#7f1d1d;color:#fecaca;border:1px solid #b91c1c}
 .toast.info{background:#1e3a5f;color:#bfdbfe;border:1px solid #2563eb}
 @keyframes su{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+/* ── Live Logs ── */
+.log-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.log-toolbar .log-count{margin-left:auto;font-size:.72rem;color:var(--sub)}
+#logview{
+  max-height:220px;overflow-y:auto;background:var(--bg);
+  border:1px solid var(--border);border-radius:8px;
+  padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.72rem;line-height:1.45;
+}
+#logview.paused{opacity:.75}
+.log-line{white-space:pre-wrap;word-break:break-word}
+.log-tag{font-weight:700;margin-right:6px}
+.log-tag-wifi{color:#60a5fa}
+.log-tag-ble{color:#a78bfa}
+.log-tag-http{color:var(--sub)}
+.log-tag-app{color:var(--warn)}
+.log-empty{color:var(--muted);font-style:italic}
 /* ── Modal ── */
 #mbg{
   display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
@@ -765,6 +801,20 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
     <button class="btn btn-g btn-sm" id="b-mreset">Reset to Cloud</button>
   </div>
   <div class="res" id="r-mqtt"></div>
+</details>
+
+<!-- Live Logs -->
+<details id="logpanel">
+  <summary><div class="ct">Live Logs</div></summary>
+  <p style="font-size:.82rem;color:var(--sub);margin-bottom:10px">
+    Bridge diagnostics (WiFi, BLE, HTTP). Stored in memory only while this page is open.
+  </p>
+  <div class="log-toolbar">
+    <button class="btn btn-g btn-sm" id="b-logpause">Pause</button>
+    <button class="btn btn-g btn-sm" id="b-logclear">Clear</button>
+    <span class="log-count" id="logcount">0 lines</span>
+  </div>
+  <div id="logview"><div class="log-empty">Expand to stream logs…</div></div>
 </details>
 
 <!-- Device / Danger Zone -->
@@ -1008,6 +1058,79 @@ document.getElementById('b-hwreset').onclick=async()=>{
 document.getElementById('b-factory').onclick=async()=>{
   if(!await confirm('Factory Reset ⚠','WARNING: This wipes all settings — schedules, WiFi, MQTT. The device will reboot. This cannot be undone.'))return;
   res('r-dev',await POST('/api/factory-reset'));
+};
+
+// ── Live logs ─────────────────────────────────────────────────────────────────
+const logs=[];
+let logSince=0;
+let logPaused=false;
+let logStick=true;
+let logPollActive=false;
+const LOG_CLIENT_MAX=500;
+const LOG_TAG_CLS={WiFi:'log-tag-wifi',BLE:'log-tag-ble',HTTP:'log-tag-http',App:'log-tag-app'};
+
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function formatLogLine(e){
+  const cls=LOG_TAG_CLS[e.tag]||'';
+  return '<div class="log-line"><span class="log-tag '+cls+'">'+escHtml(e.tag)+'</span>'+escHtml(e.msg)+'</div>';
+}
+function renderLogs(){
+  const view=document.getElementById('logview');
+  const count=document.getElementById('logcount');
+  count.textContent=logs.length+' line'+(logs.length===1?'':'s');
+  if(!logs.length){
+    view.innerHTML='<div class="log-empty">'+(logPaused?'Paused — resume to catch up':'Waiting for logs…')+'</div>';
+  }else{
+    view.innerHTML=logs.map(formatLogLine).join('');
+    if(logStick)view.scrollTop=view.scrollHeight;
+  }
+  view.classList.toggle('paused',logPaused);
+}
+function appendLogEntries(entries){
+  if(!entries||!entries.length)return;
+  for(const e of entries)logs.push(e);
+  while(logs.length>LOG_CLIENT_MAX)logs.shift();
+  renderLogs();
+}
+async function logPollLoop(){
+  while(logPollActive){
+    if(logPaused){
+      await new Promise(r=>setTimeout(r,500));
+      continue;
+    }
+    try{
+      const d=await GET('/api/logs?since='+logSince+'&wait=3');
+      if(d.error)continue;
+      if(d.entries&&d.entries.length)appendLogEntries(d.entries);
+      if(typeof d.next==='number')logSince=Math.max(logSince,d.next);
+    }catch(e){}
+  }
+}
+const logpanel=document.getElementById('logpanel');
+logpanel.addEventListener('toggle',()=>{
+  if(logpanel.open){
+    logStick=true;
+    if(!logPollActive){
+      logPollActive=true;
+      logPollLoop();
+    }
+  }else{
+    logPollActive=false;
+  }
+});
+document.getElementById('logview').addEventListener('scroll',function(){
+  logStick=this.scrollHeight-this.scrollTop-this.clientHeight<24;
+});
+document.getElementById('b-logpause').onclick=()=>{
+  logPaused=!logPaused;
+  document.getElementById('b-logpause').textContent=logPaused?'Resume':'Pause';
+  renderLogs();
+};
+document.getElementById('b-logclear').onclick=()=>{
+  logs.length=0;
+  renderLogs();
 };
 
 // ── Status polling ────────────────────────────────────────────────────────────
