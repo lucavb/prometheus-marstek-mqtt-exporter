@@ -20,6 +20,7 @@ These docs capture what was learned from:
 | [`firmware.md`](firmware.md) | Firmware download URLs, binary format, version history |
 | [`apk-analysis.md`](apk-analysis.md) | How the Flutter APK was dissected and what was extracted |
 | [`roadmap.md`](roadmap.md) | Open reverse-engineering leads and nice-to-have follow-ups |
+| [`tls.md`](tls.md) | HTTPS certificate provisioning for the ESP32 bridge (API, cert-manager CronJob, security) |
 
 ## TL;DR
 

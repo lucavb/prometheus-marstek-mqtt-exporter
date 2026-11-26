@@ -3,5 +3,7 @@
   "wifi_password": "...",
   "hostname": "esp32-marstek-watchdog",
   "battery_name": "HM_B2500",
-  "battery_mac": "58:8c:81:cc:fa:4c"
+  "battery_mac": "58:8c:81:cc:fa:4c",
+  "tls_enabled": false,
+  "tls_push_token": ""
 }

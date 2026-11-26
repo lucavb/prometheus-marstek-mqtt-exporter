@@ -216,6 +216,24 @@ Set `MARSTEK_ESP32_METRICS_FALLBACK_ENABLED=true` to let the exporter call `GET 
 
 `marstek_up` still reflects MQTT telemetry health; it remains `0` during MQTT outages even when fallback-filled gauges are present. Use `marstek_esp32_fallback_updates_total` to track how often fallback was applied.
 
+### Optional ESP32 HTTPS certificate provisioning
+
+HTTPS is **opt-in and off by default**. To enable it, set
+`"tls_enabled": true` and `tls_push_token` (at least 16 characters) in
+`esp32/config.json`, then `POST` the PEM chain and key to `/api/tls` with a
+Bearer token. No certificate or private key is needed to provision or boot the
+device: it starts over HTTP and waits for the first push. After that push the
+device reboots and serves HTTPS on `:443`; port `:80` becomes an admin/redirect
+listener and refuses cleartext certificate operations. Renewals use HTTPS
+(`--insecure` if the certificate has already expired).
+
+See [`docs/tls.md`](docs/tls.md) for the API, the stdlib-only
+`scripts/push_esp32_cert.py` helper, a complete cert-manager `Certificate` +
+`CronJob` example, and security/recovery notes.
+
+> Enabling TLS changes the exporter's ESP32 base URL to `https://...`; see the
+> exporter impact section in the TLS guide.
+
 ## Cloud emulator (optional)
 
 Marstek battery devices contact the vendor cloud server (`eu.hamedata.com` on port 80) for three purposes:

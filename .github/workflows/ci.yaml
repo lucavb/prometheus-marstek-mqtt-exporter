@@ -24,6 +24,28 @@ jobs:
       - name: Run tests
         run: go test -v ./...
 
+  esp32-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch pinned microdot for tests
+        run: curl -fsSL -o esp32/microdot.py https://raw.githubusercontent.com/miguelgrinberg/microdot/v2.8.0/src/microdot/microdot.py
+
+      - name: Compile device modules and pusher
+        run: python -m py_compile esp32/tls_store.py esp32/webserver.py esp32/main.py scripts/push_esp32_cert.py
+
+      - name: Test ESP32 TLS storage and HTTP routes
+        working-directory: esp32
+        run: python -m unittest test_tls_store test_webserver_tls test_main_tls -v
+
+      - name: Test certificate pusher
+        run: python -m unittest discover -s scripts -p "test_*.py" -v
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +73,7 @@ jobs:
         run: go build -v ./...
 
   docker:
-    needs: [test, lint, build]
+    needs: [test, esp32-python, lint, build]
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
     permissions:

@@ -13,3 +13,8 @@ esp32/aioble/
 MARSTEK_*.xapk
 apk/
 firmware/*.bin
+
+# ESP32 runtime TLS material (never commit)
+esp32/tls/
+__pycache__/
+*.pyc

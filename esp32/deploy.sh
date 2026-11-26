@@ -68,7 +68,7 @@ fi
 if [ ! -f microdot.py ]; then
     echo "Downloading microdot.py…"
     curl -fsSL -o microdot.py \
-        "https://raw.githubusercontent.com/miguelgrinberg/microdot/refs/heads/main/src/microdot/microdot.py"
+        "https://raw.githubusercontent.com/miguelgrinberg/microdot/v2.8.0/src/microdot/microdot.py"
 fi
 
 # ── Step 2b: download aioble if needed ───────────────────────────────────────
@@ -106,6 +106,7 @@ except: pass" \
         + cp microdot.py :microdot.py \
         + cp marstek_ble.py :marstek_ble.py \
         + cp logbuf.py :logbuf.py \
+        + cp tls_store.py :tls_store.py \
         + cp webserver.py :webserver.py \
         + cp boot.py :boot.py \
         + cp main.py :main.py \

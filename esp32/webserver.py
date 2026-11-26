@@ -3,11 +3,22 @@ import struct
 import ujson
 import logbuf
 import marstek_ble as ble
-from microdot import Microdot, Response
+import tls_store
+from microdot import Microdot, Request, Response
 
 Response.default_content_type = "application/json"
 
 app = Microdot()
+# Port 80 certificate listener used while TLS is enabled. It either bootstraps
+# the first certificate or serves as the recovery listener when TLS is broken.
+admin_app = Microdot()
+
+
+def configure_request_limits(tls_enabled: bool) -> None:
+    """Only opt-in deployments need room for a PEM chain plus key."""
+    limit = 24 * 1024 if tls_enabled else 16 * 1024
+    Request.max_content_length = limit
+    Request.max_body_length = limit
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +124,54 @@ def _err(msg: str, status: int = 503, code: str | None = None, hint: str | None 
     if details:
         body["details"] = details
     return body, status
+
+
+_HOST_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]_"
+
+
+def _valid_host(host: str) -> bool:
+    if not host or len(host) > 255:
+        return False
+    for ch in host:
+        if ch not in _HOST_CHARS:
+            return False
+    return True
+
+
+def _tls_admin_guard(req):
+    """The admin app is plaintext :80. Once the stored pair is proven usable,
+    never take a token or private key over it. Cleartext stays available only
+    for bootstrap or an unusable-pair recovery state."""
+    if req.app is admin_app and tls_store.pair_healthy():
+        return _err(
+            "HTTPS required for certificate operations",
+            403,
+            code="https_required",
+            hint="Use https://<device>/api/tls (for an expired cert, --insecure).",
+        )
+    return None
+
+
+def _tls_auth(req):
+    """Return an error response tuple, or None when the request may proceed."""
+    guard = _tls_admin_guard(req)
+    if guard is not None:
+        return guard
+    status = tls_store.auth_status(req)
+    if status is None:
+        return None
+    if status == "disabled":
+        return _err("not found", 404)
+    if status == "rate_limited":
+        logbuf.log("TLS", "certificate push rate limited")
+        return _err("too many failed authentication attempts", 429)
+    client = req.client_addr[0] if req.client_addr else "?"
+    logbuf.log("TLS", "certificate push authentication failed from " + client)
+    return (
+        {"error": "unauthorized", "code": "unauthorized"},
+        401,
+        {"WWW-Authenticate": 'Bearer realm="esp32-tls"'},
+    )
 
 
 async def _cmd(opcode: int, payload: bytes = b"", opname: str = "command"):
@@ -387,6 +446,130 @@ async def api_logs(req):
         await logbuf.wait_new(since, wait_s * 1000)
     entries, next_seq = logbuf.get_since(since)
     return {"entries": entries, "next": next_seq}
+
+
+# ---------------------------------------------------------------------------
+# TLS certificate provisioning (bearer token)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/tls")
+async def api_tls_status(req):
+    denied = _tls_auth(req)
+    if denied is not None:
+        return denied
+
+    info = {"enabled": tls_store.push_enabled()}
+    info.update(tls_store.installed_info())
+    info["active"] = tls_store.tls_active()
+    err = tls_store.context_error()
+    if err:
+        info["context_error"] = err
+    info["reboot_pending"] = tls_store.reboot_pending()
+    return info
+
+
+@app.post("/api/tls")
+async def api_tls_push(req):
+    denied = _tls_auth(req)
+    if denied is not None:
+        return denied
+
+    if req.content_type is None or \
+            req.content_type.split(";")[0].strip().lower() != "application/json":
+        return _err("Content-Type must be application/json", 415)
+    try:
+        body = req.json
+    except Exception:
+        return _err("invalid JSON", 400)
+    if body is None:
+        # microdot's req.json is case-sensitive about the MIME type; report
+        # the transport problem rather than a misleading missing-object error.
+        return _err("Content-Type must be application/json", 415)
+    if not isinstance(body, dict):
+        return _err("JSON object required", 400)
+
+    cert = body.get("certificate")
+    key = body.get("private_key")
+    if cert is None or key is None:
+        return _err("certificate and private_key are required", 400)
+
+    try:
+        result = tls_store.save(cert, key, force=body.get("force") is True)
+    except ValueError as exc:
+        logbuf.log("TLS", "rejected certificate: " + str(exc))
+        return _err(str(exc), 400)
+    except Exception as exc:
+        logbuf.log("TLS", "certificate save failed: " + str(exc))
+        return _err("failed to store certificate", 500)
+
+    fingerprint = result["fingerprint_sha256"]
+    if result["changed"]:
+        logbuf.log("TLS", "certificate installed fp=" + fingerprint[:16] + ", rebooting to apply")
+        tls_store.request_reboot()
+        return {
+            "ok": True,
+            "changed": True,
+            "fingerprint_sha256": fingerprint,
+            "reboot_in_s": tls_store.REBOOT_DELAY_S,
+        }
+    return {
+        "ok": True,
+        "changed": False,
+        "fingerprint_sha256": fingerprint,
+    }
+
+
+def _register_tls_routes(target) -> None:
+    target.get("/api/tls")(api_tls_status)
+    target.post("/api/tls")(api_tls_push)
+
+
+# HTTPS is active: HTTP exists only so a controller can replace an expired
+# certificate. Everything else gets redirected to the TLS listener.
+_register_tls_routes(admin_app)
+
+
+@admin_app.route("/api/<path:path>", methods=["GET", "POST"])
+async def admin_api_redirect(req, path):
+    if not tls_store.tls_active():
+        return _err("not found", 404)
+    host = req.headers.get("Host", "")
+    if not _valid_host(host):
+        return _err("invalid Host header", 400)
+    if host.endswith(":80"):
+        host = host[:-3]
+    cn = (tls_store.common_name() or "").strip().lower()
+    if not cn or host.lower() != cn:
+        return _err("HTTPS required", 403, code="https_required")
+    return Response.redirect("https://" + host + "/api/" + path, status_code=308)
+
+
+@admin_app.get("/")
+async def admin_root(req):
+    host = req.headers.get("Host", "")
+    if not _valid_host(host):
+        return Response(
+            "Invalid Host header.\n",
+            400,
+            {"Content-Type": "text/plain"},
+        )
+    if host.endswith(":80"):
+        host = host[:-3]
+    if not tls_store.tls_active():
+        return Response(
+            "TLS is configured but not active. Use the provisioning endpoint "
+            "or recover the device over USB.\n",
+            503,
+            {"Content-Type": "text/plain"},
+        )
+    cn = (tls_store.common_name() or "").strip().lower()
+    if cn and host.lower() == cn:
+        return Response.redirect("https://" + host + "/", status_code=308)
+    return Response(
+        "HTTPS is enabled. Open https://<device>/ instead.\n",
+        200,
+        {"Content-Type": "text/plain"},
+    )
 
 
 # ---------------------------------------------------------------------------
